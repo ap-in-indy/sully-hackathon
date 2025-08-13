@@ -122,4 +122,161 @@ Save these and their history to the database.
 
 * (How do we get patients more of what they want while not overburdening the physician any further?)
 
-* 
+--------------------------------------------------------
+
+4-Hour Hackathon scope cuts
+Make these choices to finish:
+
+Input routing: Push-to-talk A/B buttons. Skip diarization.
+
+Languages: English <-> Spanish only.
+
+Auth: single clinician PIN. Skip full user management.
+
+Storage: SQLite via Prisma (Node) or Firestore Lite. Store text only, plus tool logs and summary.
+
+Actions: implement both actions through webhook.site. No actual scheduling UI beyond a minimal modal for date and test code.
+
+UI: 3 screens only.
+
+Login (PIN)
+
+Patient list (static list or create-on-the-fly)
+
+Live session with split view: left is clinician, right is patient, center column is transcript, right rail is intents/actions.
+
+Minimal technical design
+Frontend (React + Redux + Router)
+
+Routes:
+
+/login
+
+/patients
+
+/session/:encounterId
+
+Redux slices:
+
+session: {encounterId, roleElevated, lastClinicianText, intents[], transcript[]}
+
+audio: {isRecording, activeSpeaker}
+
+Components:
+
+TalkControls {Clinician mic button, Patient mic button, VU meter}
+
+TranscriptList {lines with speaker, lang, original, english}
+
+IntentPanel {recognized intents with status and confirm buttons}
+
+SummaryCard {shows when end session is pressed}
+
+WebRTC client to OpenAI Realtime. Token fetched from Node server. On partial/final transcripts, dispatch to store. On tool suggestions, render buttons.
+
+Backend (Node)
+
+Endpoints:
+
+POST /token -> returns ephemeral token for client to connect to Realtime
+
+POST /tool/schedule_follow_up -> forwards to webhook.site and persists result
+
+POST /tool/send_lab_order -> same
+
+POST /encounter -> create encounter
+
+POST /encounter/:id/line -> append transcript line
+
+POST /encounter/:id/summary -> save summary
+
+DB schema (SQLite or Firestore):
+
+encounters(id, patient_id, started_at, ended_at, summary_json)
+
+transcript_lines(id, encounter_id, ts, speaker, lang, text, en_text, es_text)
+
+intents(id, encounter_id, ts, actor, name, args_json, status, webhook_response_json)
+
+LLM directives
+
+System message:
+
+You are a medical interpreter between an English speaking clinician and a Spanish speaking patient.
+
+Always produce JSON events of shape {type: "transcript"|"intent", ...}.
+
+Intents allowed: repeat_last, schedule_follow_up, send_lab_order.
+
+Only infer schedule_follow_up or send_lab_order from clinician speech.
+
+Treat phrases like "repeat that", "please repeat", "I did not understand", "otra vez", "repita por favor" as repeat_last when spoken by the patient.
+
+For each user utterance, emit:
+
+transcript: {speaker, lang, original_text, english_text, spanish_text}
+
+optional intent: {name, args}
+
+Keep a rolling memory of the last clinician utterance.
+
+TTS choices
+
+Pick one voice for Spanish output and one for English. Cache them.
+
+
+
+Alternative Design:
+
+Minimal architecture for speed
+Frontend React
+
+Pages with React Router:
+
+“Sessions” list
+
+“New visit”
+
+“Active visit”
+
+“Visit details”
+
+State: Redux slices for session, messages, actions, ui.
+
+Components: MicControls, TranscriptPane, ActionsPane, SummaryCard, ConsentBanner, ToolConfirmModal.
+
+Realtime and server
+
+Node server with a websocket that proxies to the OpenAI Realtime API or brokers WebRTC tokens.
+
+Endpoints:
+
+POST /sessions
+
+POST /messages
+
+POST /actions
+
+POST /end_visit -> runs summarization and intent extraction
+
+POST /tool/schedule_followup -> relays to webhook.site
+
+POST /tool/send_lab_order -> relays to webhook.site
+
+Mute loopback on TTS events.
+
+Keep a per-session ring buffer for last English TTS and last Spanish TTS for instant repeat.
+
+Database (pick Firestore or Postgres)
+
+sessions: id, patient_id, clinician_id, started_at, ended_at, consent, status
+
+messages: id, session_id, role, source_lang, text, translated_en, translated_es, timestamps
+
+actions: id, session_id, type, status, payload_json, webhook_response_json, clinician_id, created_at
+
+summaries: id, session_id, text_en, risks_flags, created_at
+
+patients: id, display_name
+
+clinicians: id, display_name, pin_hash
