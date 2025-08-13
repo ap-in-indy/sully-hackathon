@@ -635,24 +635,20 @@ Remember: You are ONLY an interpreter. Do not diagnose, give medical advice, or 
         modalities: ["text", "audio"], // text first helps some stacks
         input: [{ type: "item_reference", id: itemId }],
         instructions: `
-  You are a medical interpreter (English↔Spanish).
-  
-  Turn context:
-  - original_speaker: ${original}
-  - target_speaker: ${target}
-  - target_language: ${targetLang}
-  
-  Output exactly TWO content parts in this order:
-  1) TEXT part: a single JSON object with this exact shape on one line:
-  {"language":"${targetLang}","translation":"<only the translated sentence>","original_speaker":"${original}","target_speaker":"${target}"}
-  
-  2) AUDIO part: speak only <only the translated sentence> in ${targetLang}.
-  
-  Hard rules:
-  - Do NOT include any JSON, brackets, labels, or meta text in the AUDIO part.
-  - Do NOT output any extra prose or formatting anywhere.
-  - The TEXT part must be valid JSON and contain only the object above.
-        `.trim()
+You are a medical interpreter.
+
+Turn:
+- original_speaker: ${original}
+- target_speaker: ${target}
+- target_language: ${targetLang}
+
+Output exactly two content parts in this order:
+1) TEXT part: a single JSON object:
+{"language":"${targetLang}","translation":"<only the translated sentence>","original_speaker":"${original}","target_speaker":"${target}"}
+2) AUDIO part: speak only <only the translated sentence> in ${targetLang}.
+
+Never include JSON, brackets, or labels in the audio part.
+`.trim()
       }
     };
   
@@ -700,22 +696,7 @@ Remember: You are ONLY an interpreter. Do not diagnose, give medical advice, or 
 
   private handleAudioTranscriptDone(data: any): void {
     console.log('Audio transcript done:', data);
-    const t = (data.transcript || "").trim();
-  
-    // If the model accidentally spoke JSON, ignore this caption
-    if (t.startsWith("{") && t.endsWith("}")) {
-      console.log('⏭️ Ignoring audio transcript that is JSON-shaped');
-      return;
-    }
-  
-    // If we just processed JSON text, skip duplicate captions
-    const now = Date.now();
-    if (this.lastJsonTranslationAt && now - this.lastJsonTranslationAt < 2000) {
-      console.log('⏭️ Skipping audio transcript because JSON translation was just processed');
-      return;
-    }
-  
-    this.handleAIResponse(data);
+    this.handleAIResponse(data); // pass the whole event so we have response_id
   }
 
   private handleAudioDone(data: any): void {
@@ -773,24 +754,100 @@ Remember: You are ONLY an interpreter. Do not diagnose, give medical advice, or 
     return 'en';
   }
 
-  private handleAIResponse(data: any): void {
-    console.log('AI response:', data);
-
-    // Determine the original speaker based on the AI response content
-    // If AI is translating to Spanish for the patient, the original speaker was the clinician
-    // If AI is translating to English for the clinician, the original speaker was the patient
-    let speakerTarget: 'clinician' | 'patient';
-    let isSpanish = false;
-
+  private handleAIResponse(payload: any): void {
+    // Accept either the event or a raw string
+    const responseId = typeof payload === 'object' ? payload.response_id : undefined;
+    const raw = typeof payload === 'object' ? (payload.transcript || '') : String(payload || '');
+    const text = raw.trim();
+  
+    if (!text) return;
+  
+    // 1) Try to extract a leading JSON object, then the remainder (spoken text)
+    const { obj, remainder } = this.extractLeadingJson(text);
+  
+    // 2) If JSON is valid and has our schema, ingest it once
+    let jsonIngested = false;
+    if (
+      obj &&
+      (obj.language === 'en' || obj.language === 'es') &&
+      typeof obj.translation === 'string' &&
+      (obj.original_speaker === 'clinician' || obj.original_speaker === 'patient') &&
+      (obj.target_speaker === 'clinician' || obj.target_speaker === 'patient')
+    ) {
+      const lang = obj.language as 'en' | 'es';
+      this.handleTranscript({
+        speaker: obj.target_speaker,
+        lang,
+        original_text: obj.translation,
+        english_text: lang === 'en' ? obj.translation : undefined,
+        spanish_text: lang === 'es' ? obj.translation : undefined,
+        isTranslation: true,
+        jsonMetadata: obj
+      });
+      this.lastJsonTranslationAt = Date.now();
+      jsonIngested = true;
+    }
+  
+    // 3) Optionally handle the spoken caption, but only if it is non-JSON and not a duplicate
+    const cap = remainder.trim();
+    if (!cap) return;
+  
+    // Drop if it looks like JSON
+    if (cap.startsWith('{') && cap.endsWith('}')) {
+      console.log('⏭️ Ignoring audio transcript that is JSON-shaped');
+      return;
+    }
+  
+    // Drop if we just ingested JSON a moment ago (same response)
+    const justNow = Date.now() - this.lastJsonTranslationAt < 1500;
+    if (jsonIngested && justNow) {
+      console.log('⏭️ Skipping caption because JSON was just processed');
+      return;
+    }
+  
+    // Fallback: infer target from language of caption if no JSON
+    const isSpanish = /[áéíóúñü¿¡]/i.test(cap) ||
+                      /\b(el|la|los|las|de|que|y|en|un|una|es|está|tiene|me)\b/i.test(cap);
+  
     this.handleTranscript({
-      speaker: data.speakerTarget,
+      speaker: isSpanish ? 'patient' : 'clinician',
       lang: isSpanish ? 'es' : 'en',
-      original_text: data.text,
-      english_text: isSpanish ? undefined : data.text,
-      spanish_text: isSpanish ? data.text : undefined,
-      isTranslation: true // This is an AI translation
+      original_text: cap,
+      english_text: isSpanish ? undefined : cap,
+      spanish_text: isSpanish ? cap : undefined,
+      isTranslation: true
     });
   }
+
+  private extractLeadingJson(s: string): { obj?: any; remainder: string } {
+    // Finds the first top-level {...} at the start of the string and parses it.
+    // Allows optional whitespace and a blank line after.
+    const trimmed = s.trimStart();
+    if (!trimmed.startsWith('{')) return { remainder: s };
+  
+    // Simple balanced-brace scan to find the end of the first JSON object
+    let depth = 0;
+    let end = -1;
+    for (let i = 0; i < trimmed.length; i++) {
+      const ch = trimmed[i];
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) { end = i; break; }
+      }
+    }
+    if (end === -1) return { remainder: s };
+  
+    const jsonStr = trimmed.slice(0, end + 1);
+    try {
+      const obj = JSON.parse(jsonStr);
+      const remainder = trimmed.slice(end + 1).replace(/^\s+/, '');
+      return { obj, remainder };
+    } catch {
+      return { remainder: s };
+    }
+  }
+  
 
   private handleAIRealTimeTranscript(text: string): void {
     console.log('AI real-time transcript:', text);
