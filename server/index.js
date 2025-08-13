@@ -33,18 +33,38 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// Favicon endpoint
+app.get('/favicon.ico', (req, res) => {
+  res.status(204).end(); // No content
+});
+
 // Generate ephemeral token for OpenAI Realtime API
 app.post('/api/token', async (req, res) => {
   try {
+    console.log('API Key available:', !!process.env.OPENAI_API_KEY);
+    console.log('API Key length:', process.env.OPENAI_API_KEY ? process.env.OPENAI_API_KEY.length : 0);
+    
+    if (!process.env.OPENAI_API_KEY) {
+      console.error('OpenAI API key not found in environment variables');
+      return res.status(500).json({ error: 'OpenAI API key not configured' });
+    }
+    
     const response = await openai.beta.realtime.sessions.create({
       model: "gpt-4o-realtime-preview-2025-06-03",
       voice: "alloy",
     });
     
+    console.log('Token created successfully');
     res.json(response);
   } catch (error) {
     console.error('Error creating ephemeral token:', error);
-    res.status(500).json({ error: 'Failed to create token' });
+    console.error('Error details:', error.message);
+    console.error('Error response:', error.response?.data);
+    res.status(500).json({ 
+      error: 'Failed to create token',
+      details: error.message,
+      response: error.response?.data
+    });
   }
 });
 
