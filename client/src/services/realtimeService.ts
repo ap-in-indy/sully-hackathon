@@ -325,6 +325,8 @@ class RealtimeService {
   }
 
   private addDemoTranscripts(): void {
+    return;
+    
     const demoTranscripts = [
       {
         speaker: 'clinician' as const,
