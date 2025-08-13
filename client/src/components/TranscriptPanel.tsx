@@ -57,8 +57,8 @@ const TranscriptPanel: React.FC = () => {
               </div>
               
               <div className="transcript-text">
-                <div className="original-text">
-                  <strong>Original:</strong> {line.text}
+                <div className={line.isTranslation ? "translation" : "original-text"}>
+                  <strong>{line.isTranslation ? "Translation:" : "Original:"}</strong> {line.text}
                 </div>
                 
                 {line.en_text && line.en_text !== line.text && (

@@ -7,6 +7,7 @@ export interface TranscriptLine {
   text: string;
   en_text?: string;
   es_text?: string;
+  isTranslation: boolean; // Indicates if this is an AI translation or original speech
   timestamp: string; // Store as ISO string instead of Date object
 }
 

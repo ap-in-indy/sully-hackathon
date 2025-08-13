@@ -389,7 +389,7 @@ CONVERSATION FLOW:
 - Use formal medical language appropriate for healthcare settings
 
 EXAMPLE BEHAVIOR:
-Patient: "Me duele el estómago" → You: "The patient says their stomach hurts"
+Patient: "Me duele el estómago" → You: "My stomach hurts."
 Clinician: "How long have you had this pain?" → You: "¿Cuánto tiempo ha tenido este dolor?"
 
 Remember: You are ONLY an interpreter. Do not diagnose, give medical advice, or add commentary. Just translate accurately between English and Spanish.
@@ -398,7 +398,7 @@ When replying, YOU MUST start each response with a language tag in brackets:
 [EN] for English, [ES] for Spanish.
 Example:
 - Input (Patient): "¿Cómo está?"
-- Output: "[EN] The patient says: 'How are you?'"`,
+- Output: "[EN] 'How are you?'"`,
         input_audio_transcription: { model: "whisper-1" },
         temperature: 0.6,  // Lower temperature for more deterministic translations
         turn_detection: { type: 'server_vad' },
@@ -573,7 +573,8 @@ Example:
       lang,
       original_text: transcript,
       english_text: lang === 'en' ? transcript : undefined,
-      spanish_text: lang === 'es' ? transcript : undefined
+      spanish_text: lang === 'es' ? transcript : undefined,
+      isTranslation: false // This is original speech, not a translation
     });
   }
 
@@ -671,19 +672,35 @@ Example:
   private handleAIResponse(text: string): void {
     console.log('AI response:', text);
   
-    // naive language check; you can keep your helper if you prefer
-    const isSpanish = /[áéíóúñü]/i.test(text) ||
-                      /\b(el|la|los|las|de|que|y|en|un|una|es|son|está|están|tiene|tienen|me|te|se|nos|le|les)\b/i.test(text);
-  
-    // IMPORTANT: attribute to the TARGET listener
-    const speakerTarget: 'clinician' | 'patient' = isSpanish ? 'patient' : 'clinician';
+    // Determine the original speaker based on the AI response content
+    // If AI is translating to Spanish for the patient, the original speaker was the clinician
+    // If AI is translating to English for the clinician, the original speaker was the patient
+    let speakerTarget: 'clinician' | 'patient';
+    let isSpanish = false;
+    
+    // Check for language markers in the response
+    if (text.startsWith('[ES]') || text.includes('El doctor') || text.includes('La doctora')) {
+      // AI is translating clinician's words to Spanish for the patient
+      speakerTarget = 'clinician';
+      isSpanish = true;
+    } else if (text.startsWith('[EN]') || text.includes('The patient says') || text.includes('patient says')) {
+      // AI is translating patient's words to English for the clinician
+      speakerTarget = 'patient';
+      isSpanish = false;
+    } else {
+      // Fallback: use language detection
+      isSpanish = /[áéíóúñü]/i.test(text) ||
+                  /\b(el|la|los|las|de|que|y|en|un|una|es|son|está|están|tiene|tienen|me|te|se|nos|le|les)\b/i.test(text);
+      speakerTarget = isSpanish ? 'patient' : 'clinician';
+    }
   
     this.handleTranscript({
       speaker: speakerTarget,
       lang: isSpanish ? 'es' : 'en',
       original_text: text,
       english_text: isSpanish ? undefined : text,
-      spanish_text: isSpanish ? text : undefined
+      spanish_text: isSpanish ? text : undefined,
+      isTranslation: true // This is an AI translation
     });
   }
 
@@ -755,6 +772,7 @@ Example:
       text: data.original_text,
       en_text: data.english_text,
       es_text: data.spanish_text,
+      isTranslation: data.isTranslation || false,
       timestamp: new Date().toISOString(), // Store as ISO string for Redux
     };
 
