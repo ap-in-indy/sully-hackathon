@@ -1,143 +1,169 @@
-# Deployment Guide - GitHub Pages
+# Deployment Guide
 
-This guide will help you deploy the Sully Medical Translator to GitHub Pages.
+This guide covers two approaches to deploy your Sully Medical Translator application while securely handling the OpenAI API key.
 
-## Prerequisites
+## Option 1: Vercel Backend + GitHub Pages Frontend (Recommended)
 
-1. **GitHub Repository**: Make sure your repository is pushed to GitHub
-2. **Public Repository**: GitHub Pages requires the repository to be public (unless you have GitHub Pro)
-3. **Node.js**: Ensure you have Node.js installed on your system
-4. **GitHub Personal Access Token**: You'll need a PAT for authentication (see setup below)
+This is the most secure approach as it keeps your API key on the server side.
 
-## Quick Deployment
+### Step 1: Deploy Backend to Vercel
 
-### Option 1: Using the deployment script
-
-```bash
-# Make the script executable (if not already)
-chmod +x deploy.sh
-
-# Run the deployment script
-./deploy.sh
-```
-
-### Option 2: Manual deployment
-
-```bash
-# Navigate to the client directory
-cd client
-
-# Install dependencies
-npm install
-
-# Install gh-pages for deployment
-npm install gh-pages --save-dev
-
-# Build the production version
-npm run build
-
-# Deploy to GitHub Pages
-npm run deploy
-```
-
-## GitHub Authentication Setup
-
-Before deploying, you need to set up GitHub authentication:
-
-### Option 1: Personal Access Token (Recommended)
-
-1. **Create a Personal Access Token**:
-   - Go to GitHub.com → Settings → Developer settings → Personal access tokens → Tokens (classic)
-   - Click "Generate new token (classic)"
-   - Give it a name like "GitHub Pages Deployment"
-   - Select scopes: `repo` (full control of private repositories)
-   - Copy the generated token (you won't see it again!)
-
-2. **Configure Git to use the token**:
+1. **Install Vercel CLI**:
    ```bash
-   git config --global credential.helper store
+   npm install -g vercel
    ```
-   
-   When prompted during deployment:
-   - **Username**: Your GitHub username (`ap-in-indy`)
-   - **Password**: Use your Personal Access Token (not your GitHub password)
 
-### Option 2: SSH Keys (Alternative)
+2. **Login to Vercel**:
+   ```bash
+   vercel login
+   ```
 
-If you prefer SSH authentication:
-1. Generate SSH keys: `ssh-keygen -t ed25519 -C "your_email@example.com"`
-2. Add the public key to your GitHub account
-3. Update your repository remote to use SSH: `git remote set-url origin git@github.com:ap-in-indy/sully-hackathon.git`
+3. **Deploy the backend**:
+   ```bash
+   cd server
+   vercel
+   ```
 
-## GitHub Pages Setup
+4. **Set environment variables in Vercel**:
+   - Go to your Vercel dashboard
+   - Select your project
+   - Go to Settings → Environment Variables
+   - Add: `OPENAI_API_KEY` = your actual OpenAI API key
 
-After running the deployment script, you need to configure GitHub Pages:
+5. **Update client configuration**:
+   - Replace `your-vercel-app-name.vercel.app` in `client/package.json` with your actual Vercel app URL
+   - The proxy should point to your Vercel deployment
 
-1. **Go to your repository on GitHub**
-2. **Navigate to Settings** → **Pages**
-3. **Source**: Select "Deploy from a branch"
-4. **Branch**: Select "gh-pages" branch
-5. **Folder**: Leave as "/ (root)"
-6. **Click Save**
+### Step 2: Deploy Frontend to GitHub Pages
 
-## Important Notes
+1. **Update the proxy URL** in `client/package.json`:
+   ```json
+   "proxy": "https://your-actual-vercel-app.vercel.app"
+   ```
 
-### Backend Configuration
-⚠️ **Important**: The current app is configured to connect to a local backend server (`http://localhost:3001`). For production deployment, you'll need to:
+2. **Deploy to GitHub Pages**:
+   ```bash
+   cd client
+   npm run deploy
+   ```
 
-1. **Deploy your backend server** to a hosting service (Heroku, Railway, etc.)
-2. **Update the backend URL** in your frontend code
-3. **Configure CORS** on your backend to allow requests from your GitHub Pages domain
+## Option 2: GitHub Pages with Environment Variables (Less Secure)
 
-### Environment Variables
-If you need to configure different backend URLs for development vs production, consider using environment variables:
+This approach exposes your API key to the frontend but works for demos.
 
-```javascript
-// In your realtimeService.ts or similar
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:3001';
+### Step 1: Set GitHub Repository Secrets
+
+1. Go to your GitHub repository
+2. Navigate to Settings → Secrets and variables → Actions
+3. Add a new repository secret:
+   - Name: `REACT_APP_OPENAI_API_KEY`
+   - Value: your actual OpenAI API key
+
+### Step 2: Create GitHub Actions Workflow
+
+Create `.github/workflows/deploy.yml`:
+
+```yaml
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
+        cache: 'npm'
+    
+    - name: Install dependencies
+      run: |
+        npm install
+        cd client && npm install
+    
+    - name: Build React app
+      run: cd client && npm run build
+      env:
+        REACT_APP_OPENAI_API_KEY: ${{ secrets.REACT_APP_OPENAI_API_KEY }}
+    
+    - name: Deploy to GitHub Pages
+      uses: peaceiris/actions-gh-pages@v3
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        publish_dir: ./client/build
 ```
 
-### CORS Configuration
-Your backend server needs to allow requests from your GitHub Pages domain. Add this to your backend CORS configuration:
+### Step 3: Enable GitHub Pages
 
-```javascript
-// Example CORS configuration for your backend
-app.use(cors({
-  origin: [
-    'http://localhost:3000',
-    'https://alexpritchard.github.io'
-  ]
-}));
+1. Go to your repository Settings → Pages
+2. Set source to "Deploy from a branch"
+3. Select the `gh-pages` branch
+4. Save
+
+## Security Considerations
+
+### Option 1 (Vercel Backend) - ✅ Secure
+- API key stays on server
+- Client only gets ephemeral tokens
+- No exposure of sensitive data
+
+### Option 2 (GitHub Pages) - ⚠️ Less Secure
+- API key is embedded in the frontend bundle
+- Visible in browser developer tools
+- Only suitable for demos/prototypes
+
+## Environment Variables Reference
+
+### Backend (Vercel)
+```env
+OPENAI_API_KEY=your_openai_api_key_here
+DATABASE_URL="file:./dev.db"
+PORT=3001
+NODE_ENV=production
+JWT_SECRET=your_jwt_secret_here
+```
+
+### Frontend (GitHub Pages - Option 2 only)
+```env
+REACT_APP_OPENAI_API_KEY=your_openai_api_key_here
 ```
 
 ## Troubleshooting
 
+### CORS Issues
+If you encounter CORS errors, ensure your Vercel backend has proper CORS configuration:
+
+```javascript
+app.use(cors({
+  origin: ['https://your-github-username.github.io', 'http://localhost:3000'],
+  credentials: true
+}));
+```
+
+### Database Issues
+For production, consider using a cloud database instead of SQLite:
+
+- **PlanetScale** (MySQL)
+- **Supabase** (PostgreSQL)
+- **MongoDB Atlas**
+
+Update your `DATABASE_URL` in Vercel environment variables accordingly.
+
 ### Build Errors
-- Make sure all dependencies are installed: `npm install`
-- Check for TypeScript errors: `npm run build`
-- Ensure all imports are correct
+If you encounter build errors, ensure all dependencies are properly installed:
 
-### Deployment Issues
-- Verify your repository is public
-- Check that GitHub Pages is enabled in repository settings
-- Ensure the `gh-pages` branch was created successfully
+```bash
+npm run install-all
+cd client && npm install
+```
 
-### Routing Issues
-- The app is configured to work with GitHub Pages routing
-- If you encounter 404 errors on direct navigation, the 404.html redirect should handle it
-- Test navigation by refreshing pages and using browser back/forward buttons
+## Recommended Approach
 
-## Production URL
-
-Once deployed, your app will be available at:
-**https://ap-in-indy.github.io/sully-hackathon**
-
-## Updating the Deployment
-
-To update your deployed app:
-
-1. Make your changes to the code
-2. Commit and push to GitHub
-3. Run the deployment script again: `./deploy.sh`
-
-The new version will be deployed automatically.
+For a production application, **use Option 1 (Vercel Backend)** as it provides the best security while maintaining functionality. Option 2 should only be used for demos or prototypes where security is not a primary concern.

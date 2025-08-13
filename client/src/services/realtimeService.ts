@@ -42,22 +42,60 @@ class RealtimeService {
         throw new Error('getUserMedia is not supported in this browser');
       }
 
-      // Get ephemeral token from server
-      const tokenResponse = await fetch('/api/token', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      });
+      // Try to get ephemeral token from server first
+      let ephemeralKey: string;
       
-      if (!tokenResponse.ok) {
-        console.warn('Failed to get OpenAI token, entering demo mode');
-        this.initializeDemoMode(config);
-        return;
+      try {
+        const tokenResponse = await fetch('/api/token', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        });
+        
+        if (tokenResponse.ok) {
+          const tokenData = await tokenResponse.json();
+          ephemeralKey = tokenData.client_secret.value;
+        } else {
+          throw new Error('Server token endpoint failed');
+        }
+      } catch (serverError) {
+        console.warn('Server token endpoint failed, trying direct OpenAI API:', serverError);
+        
+        // Fallback: Try to use environment variable if available (for GitHub Pages)
+        const openaiApiKey = process.env.REACT_APP_OPENAI_API_KEY;
+        if (!openaiApiKey) {
+          console.warn('No OpenAI API key available, entering demo mode');
+          this.initializeDemoMode(config);
+          return;
+        }
+        
+        // Create ephemeral token directly (this is less secure but works for demo)
+        try {
+          const directResponse = await fetch('https://api.openai.com/v1/realtime/sessions', {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${openaiApiKey}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              model: 'gpt-4o-realtime-preview-2025-06-03',
+              voice: 'alloy',
+            }),
+          });
+          
+          if (!directResponse.ok) {
+            throw new Error('Failed to create direct session');
+          }
+          
+          const directData = await directResponse.json();
+          ephemeralKey = directData.client_secret.value;
+        } catch (directError) {
+          console.error('Direct API call failed:', directError);
+          this.initializeDemoMode(config);
+          return;
+        }
       }
-      
-      const tokenData = await tokenResponse.json();
-      const ephemeralKey = tokenData.client_secret.value;
 
       // Create peer connection
       this.peerConnection = new RTCPeerConnection({
