@@ -1,15 +1,15 @@
 import { store } from '../store';
-import { 
-  addTranscript, 
-  addIntent, 
+import {
+  addTranscript,
+  addIntent,
   setConnectionStatus
 } from '../store/slices/sessionSlice';
-import { 
-  setActiveSpeaker, 
-  setAudioLevel, 
+import {
+  setActiveSpeaker,
+  setAudioLevel,
   setError,
   setLastClinicianText,
-  setLastPatientText 
+  setLastPatientText
 } from '../store/slices/audioSlice';
 import { addNotification } from '../store/slices/uiSlice';
 
@@ -26,6 +26,7 @@ class RealtimeService {
   private mediaStream: MediaStream | null = null;
   private isConnected = false;
   private config: RealtimeConfig | null = null;
+  private lastJsonTranslationAt: number = 0;
 
   async initialize(config: RealtimeConfig): Promise<void> {
     // Clean up any existing session first
@@ -35,7 +36,7 @@ class RealtimeService {
     }
 
     this.config = config;
-    
+
     try {
       // Check if getUserMedia is supported
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -49,13 +50,13 @@ class RealtimeService {
           'Content-Type': 'application/json',
         },
       });
-      
+
       if (!tokenResponse.ok) {
         console.warn('Failed to get OpenAI token, entering demo mode');
         this.initializeDemoMode(config);
         return;
       }
-      
+
       const tokenData = await tokenResponse.json();
       const ephemeralKey = tokenData.client_secret.value;
 
@@ -69,13 +70,13 @@ class RealtimeService {
       // Monitor connection state changes
       this.peerConnection.onconnectionstatechange = () => {
         console.log('Peer connection state changed:', this.peerConnection?.connectionState);
-        
-        if (this.peerConnection?.connectionState === 'failed' || 
-            this.peerConnection?.connectionState === 'disconnected') {
+
+        if (this.peerConnection?.connectionState === 'failed' ||
+          this.peerConnection?.connectionState === 'disconnected') {
           console.log('Peer connection failed or disconnected, attempting to reconnect...');
           this.isConnected = false;
           store.dispatch(setConnectionStatus(false));
-          
+
           // Try to reconnect after a delay
           setTimeout(() => {
             if (this.config) {
@@ -125,7 +126,7 @@ class RealtimeService {
       // Set up data channel for events
       this.dataChannel = this.peerConnection.createDataChannel('oai-events');
       this.dataChannel.onmessage = this.handleDataChannelMessage.bind(this);
-      
+
       // Wait for data channel to be open before proceeding
       this.dataChannel.onopen = () => {
         console.log('Data channel opened, sending session configuration');
@@ -146,7 +147,7 @@ class RealtimeService {
 
       const baseUrl = 'https://api.openai.com/v1/realtime';
       const model = 'gpt-4o-realtime-preview-2025-06-03';
-      
+
       const sdpResponse = await fetch(`${baseUrl}?model=${model}`, {
         method: 'POST',
         body: offer.sdp,
@@ -166,7 +167,7 @@ class RealtimeService {
       };
 
       await this.peerConnection.setRemoteDescription(answer);
-      
+
       this.isConnected = true;
       store.dispatch(setConnectionStatus(true));
       store.dispatch(setError(null));
@@ -222,13 +223,13 @@ class RealtimeService {
       console.log('Creating new data channel...');
       this.dataChannel = this.peerConnection.createDataChannel('oai-events');
       this.dataChannel.onmessage = this.handleDataChannelMessage.bind(this);
-      
+
       this.dataChannel.onopen = () => {
         console.log('Data channel reconnected successfully');
         this.isConnected = true;
         store.dispatch(setConnectionStatus(true));
         store.dispatch(setError(null));
-        
+
         // Send session configuration again
         this.sendSessionConfiguration();
       };
@@ -252,21 +253,21 @@ class RealtimeService {
 
   private initializeDemoMode(config: RealtimeConfig): void {
     console.log('Initializing demo mode - simulating real-time communication');
-    
+
     this.config = config;
     this.isConnected = true;
     store.dispatch(setConnectionStatus(true));
     store.dispatch(setError(null));
-    
+
     // Notify user about demo mode
     store.dispatch(addNotification({
       type: 'info',
       message: 'Demo mode active - simulating real-time translation. Add your OpenAI API key to enable live voice translation.'
     }));
-    
+
     // Simulate audio level monitoring
     this.simulateAudioLevels();
-    
+
     // Add some demo transcripts after a delay
     setTimeout(() => {
       this.addDemoTranscripts();
@@ -279,16 +280,16 @@ class RealtimeService {
     const audioContext = new AudioContext();
     const analyser = audioContext.createAnalyser();
     const microphone = audioContext.createMediaStreamSource(this.mediaStream);
-    
+
     microphone.connect(analyser);
     analyser.fftSize = 256;
-    
+
     const bufferLength = analyser.frequencyBinCount;
     const dataArray = new Uint8Array(bufferLength);
-    
+
     const updateAudioLevel = () => {
       if (!this.isConnected) return;
-      
+
       analyser.getByteFrequencyData(dataArray);
       let sum = 0;
       for (let i = 0; i < bufferLength; i++) {
@@ -296,35 +297,36 @@ class RealtimeService {
       }
       const average = sum / bufferLength;
       const level = Math.min(100, (average / 128) * 100);
-      
+
       store.dispatch(setAudioLevel(level));
       requestAnimationFrame(updateAudioLevel);
     };
-    
+
     updateAudioLevel();
   }
 
   private simulateAudioLevels(): void {
     const simulateLevel = () => {
       if (!this.isConnected) return;
-      
+
       // Simulate random audio levels
       const level = Math.random() * 30 + 10; // 10-40 range
       store.dispatch(setAudioLevel(level));
-      
+
       // Randomly set active speaker
       if (Math.random() > 0.8) {
         const speaker = Math.random() > 0.5 ? 'clinician' : 'patient';
         store.dispatch(setActiveSpeaker(speaker));
       }
-      
+
       setTimeout(simulateLevel, 100);
     };
-    
+
     simulateLevel();
   }
 
   private addDemoTranscripts(): void {
+    return;
     const demoTranscripts = [
       {
         speaker: 'clinician' as const,
@@ -358,7 +360,7 @@ class RealtimeService {
 
   private sendSessionConfiguration(): void {
     if (!this.dataChannel || !this.config) return;
-    
+
     // Ensure data channel is open before sending
     if (this.dataChannel.readyState !== 'open') {
       console.log('Data channel not ready, retrying in 100ms...');
@@ -371,6 +373,7 @@ class RealtimeService {
     const sessionConfig = {
       type: "session.update",
       session: {
+        modalities: ["text", "audio"],
         instructions: `You are a medical interpreter facilitating communication between an English-speaking clinician and a Spanish-speaking patient.
 
 CRITICAL INSTRUCTIONS:
@@ -392,23 +395,17 @@ EXAMPLE BEHAVIOR:
 Patient: "Me duele el estómago" → You: "My stomach hurts."
 Clinician: "How long have you had this pain?" → You: "¿Cuánto tiempo ha tenido este dolor?"
 
-Remember: You are ONLY an interpreter. Do not diagnose, give medical advice, or add commentary. Just translate accurately between English and Spanish.
-
-When replying, YOU MUST start each response with a language tag in brackets:
-[EN] for English, [ES] for Spanish.
-Example:
-- Input (Patient): "¿Cómo está?"
-- Output: "[EN] 'How are you?'"`,
+Remember: You are ONLY an interpreter. Do not diagnose, give medical advice, or add commentary. Just translate accurately between English and Spanish.`,
         input_audio_transcription: { model: "whisper-1" },
         temperature: 0.6,  // Lower temperature for more deterministic translations
-        turn_detection: { type: 'server_vad' },
+        turn_detection: { type: 'server_vad', create_response: false },
       }
     };
 
     try {
       this.dataChannel.send(JSON.stringify(sessionConfig));
       console.log('Session configuration sent successfully via session.update');
-      
+
       // Verify the configuration was applied after a short delay
       setTimeout(() => {
         this.verifySessionConfiguration();
@@ -417,27 +414,32 @@ Example:
       console.error('Error sending session configuration:', error);
     }
   }
-  
+
 
   private handleDataChannelMessage(event: MessageEvent): void {
     try {
       const data = JSON.parse(event.data);
       console.log('Received data channel message:', data);
-      
+
       switch (data.type) {
+        case 'error': {
+          const err = data.error || {};
+          console.error('Realtime API error:', err.type, err.code, err.param, err.message);
+          return;
+        }
         // Handle input audio transcription (patient/clinician speech)
         case 'input_audio_buffer.speech_started':
           this.handleSpeechStarted(data);
           break;
-          
+
         case 'input_audio_buffer.speech_stopped':
           this.handleSpeechStopped(data);
           break;
-          
+
         case 'input_audio_buffer.committed':
           this.handleSpeechCommitted(data);
           break;
-          
+
         case 'conversation.item.input_audio_transcription.completed':
           this.handleInputTranscriptionCompleted(data);
           break;
@@ -446,23 +448,19 @@ Example:
         case 'response.created':
           this.handleResponseCreated(data);
           break;
-          
-        case 'response.content_part.added':
-          this.handleContentPartAdded(data);
-          break;
-          
+
         case 'response.audio_transcript.delta':
           this.handleAudioTranscriptDelta(data);
           break;
-          
+
         case 'response.audio_transcript.done':
           this.handleAudioTranscriptDone(data);
           break;
-          
+
         case 'response.audio.done':
           this.handleAudioDone(data);
           break;
-          
+
         case 'response.done':
           this.handleResponseDone(data);
           break;
@@ -471,7 +469,7 @@ Example:
         case 'output_audio_buffer.started':
           this.handleStartSpeaking();
           break;
-          
+
         case 'output_audio_buffer.stopped':
           this.handleStopSpeaking();
           break;
@@ -485,7 +483,7 @@ Example:
         case 'session.created':
           console.log('Session created:', data);
           break;
-          
+
         case 'session.updated':
           console.log('Session updated with configuration:', data);
           // Verify that our session configuration was accepted
@@ -503,15 +501,15 @@ Example:
         case 'transcript':
           this.handleTranscript(data);
           break;
-          
+
         case 'intent':
           this.handleIntent(data);
           break;
-          
+
         case 'speaker_change':
           this.handleSpeakerChange(data);
           break;
-          
+
         case 'audio_level':
           this.handleAudioLevel(data);
           break;
@@ -519,11 +517,26 @@ Example:
         case 'conversation.item.input_audio_transcription.delta':
           // optional: accumulate partial transcript for live captions
           break;
-        
-        case 'response.content_part.done':
-          // optional: inspect final content parts
+
+        case 'response.content_part.added':
+        case 'response.content_part.done': {
+          // Same logic: first try data.part, then fallback to item.content
+          const p = data.part;
+          if (p && (p.type === 'text' || p.type === 'output_text')) {
+            const raw: string = p.text ?? p.value ?? p.content ?? '';
+            if (raw) this.tryParseTranslationJson(raw);
+            break;
+          }
+          const parts = data.item?.content || [];
+          for (const part of parts) {
+            if (part.type === 'text' || part.type === 'output_text') {
+              const raw: string = part.text ?? part.value ?? part.content ?? '';
+              if (raw) this.tryParseTranslationJson(raw);
+            }
+          }
           break;
-        
+        }
+
         case 'response.output_item.done':
           // optional: marks an output item finalized
           break;
@@ -534,6 +547,33 @@ Example:
     } catch (error) {
       console.error('Error handling data channel message:', error);
     }
+  }
+
+  private tryParseTranslationJson(raw: string): void {
+    try {
+      const obj = JSON.parse(raw);
+      if (
+        obj &&
+        (obj.language === 'en' || obj.language === 'es') &&
+        typeof obj.translation === 'string' &&
+        (obj.original_speaker === 'clinician' || obj.original_speaker === 'patient') &&
+        (obj.target_speaker === 'clinician' || obj.target_speaker === 'patient')
+      ) {
+        const lang = obj.language as 'en' | 'es';
+        this.handleTranscript({
+          speaker: obj.target_speaker,
+          lang,
+          original_text: obj.translation,
+          english_text: lang === 'en' ? obj.translation : undefined,
+          spanish_text: lang === 'es' ? obj.translation : undefined,
+          isTranslation: true,
+          jsonMetadata: obj
+        });
+        this.lastJsonTranslationAt = Date.now();
+      } else {
+        console.log('⚠️ Parsed JSON missing required fields:', obj);
+      }
+    } catch {}
   }
 
   private handleSpeechStarted(data: any): void {
@@ -553,7 +593,7 @@ Example:
 
   private handleInputTranscriptionCompleted(data: any): void {
     console.log('Input transcription completed:', data);
-    
+
     // Extract transcript from the completed transcription
     const transcript = data.transcript || data.item?.content?.[0]?.transcript;
     if (!transcript) {
@@ -576,7 +616,49 @@ Example:
       spanish_text: lang === 'es' ? transcript : undefined,
       isTranslation: false // This is original speech, not a translation
     });
+
+    // Ask for a bilingual response (audio + JSON text)
+    // If clinician spoke EN, target is patient; if patient spoke ES, target is clinician
+    const target = (lang === 'en') ? 'patient' : 'clinician';
+    this.requestBilingualResponseFor(data.item_id, target);
   }
+
+  private requestBilingualResponseFor(itemId: string, target: 'patient' | 'clinician') {
+    if (!this.dataChannel || this.dataChannel.readyState !== 'open') return;
+  
+    const original = target === 'patient' ? 'clinician' : 'patient';
+    const targetLang = target === 'patient' ? 'es' : 'en';
+  
+    const message = {
+      type: "response.create",
+      response: {
+        modalities: ["text", "audio"], // text first helps some stacks
+        input: [{ type: "item_reference", id: itemId }],
+        instructions: `
+  You are a medical interpreter (English↔Spanish).
+  
+  Turn context:
+  - original_speaker: ${original}
+  - target_speaker: ${target}
+  - target_language: ${targetLang}
+  
+  Output exactly TWO content parts in this order:
+  1) TEXT part: a single JSON object with this exact shape on one line:
+  {"language":"${targetLang}","translation":"<only the translated sentence>","original_speaker":"${original}","target_speaker":"${target}"}
+  
+  2) AUDIO part: speak only <only the translated sentence> in ${targetLang}.
+  
+  Hard rules:
+  - Do NOT include any JSON, brackets, labels, or meta text in the AUDIO part.
+  - Do NOT output any extra prose or formatting anywhere.
+  - The TEXT part must be valid JSON and contain only the object above.
+        `.trim()
+      }
+    };
+  
+    this.dataChannel.send(JSON.stringify(message));
+  }
+
 
   private handleResponseCreated(data: any): void {
     console.log('AI response created:', data);
@@ -585,20 +667,31 @@ Example:
 
   private handleContentPartAdded(data: any): void {
     console.log('Content part added:', data);
-    
-    // Check if this is a text response that should be translated
-    if (data.item?.content?.[0]?.type === 'text') {
-      const text = data.item.content[0].text;
-      if (text) {
-        // This is the AI's text response - we can translate it if needed
-        this.handleAIResponse(text);
+
+    // 1) Preferred: parse the part on the event
+    const p = data.part;
+    if (p) {
+      if (p.type === 'text' || p.type === 'output_text') {
+        const raw: string = p.text ?? p.value ?? p.content ?? '';
+        if (raw) this.tryParseTranslationJson(raw);
+      }
+      // If it's audio we just ignore here; captions come via response.audio_transcript.*
+      return;
+    }
+
+    // 2) Fallback: some stacks include a snapshot of the item's content array
+    const parts = data.item?.content || [];
+    for (const part of parts) {
+      if (part.type === 'text' || part.type === 'output_text') {
+        const raw: string = part.text ?? part.value ?? part.content ?? '';
+        if (raw) this.tryParseTranslationJson(raw);
       }
     }
   }
 
   private handleAudioTranscriptDelta(data: any): void {
     console.log('Audio transcript delta:', data);
-    
+
     // This is the AI speaking - we can show real-time transcription
     if (data.delta?.text) {
       this.handleAIRealTimeTranscript(data.delta.text);
@@ -607,11 +700,22 @@ Example:
 
   private handleAudioTranscriptDone(data: any): void {
     console.log('Audio transcript done:', data);
-    
-    // AI finished speaking - final transcript
-    if (data.transcript) {
-      this.handleAIResponse(data.transcript);
+    const t = (data.transcript || "").trim();
+  
+    // If the model accidentally spoke JSON, ignore this caption
+    if (t.startsWith("{") && t.endsWith("}")) {
+      console.log('⏭️ Ignoring audio transcript that is JSON-shaped');
+      return;
     }
+  
+    // If we just processed JSON text, skip duplicate captions
+    const now = Date.now();
+    if (this.lastJsonTranslationAt && now - this.lastJsonTranslationAt < 2000) {
+      console.log('⏭️ Skipping audio transcript because JSON translation was just processed');
+      return;
+    }
+  
+    this.handleAIResponse(data);
   }
 
   private handleAudioDone(data: any): void {
@@ -626,7 +730,7 @@ Example:
 
   private handleConversationItemCreated(data: any): void {
     console.log('Conversation item created:', data);
-    
+
     // Check if this item contains intents or actions
     if (data.item?.content) {
       for (const content of data.item.content) {
@@ -644,62 +748,46 @@ Example:
     const lang = (langFromEvent === 'es' || langFromEvent === 'en')
       ? langFromEvent
       : this.detectLanguage(text);
-  
+
     return lang === 'en' ? 'clinician' : 'patient';
   }
 
   private detectLanguage(text: string): 'en' | 'es' {
     if (!text || !text.trim()) return 'en';
-  
+
     const t = text.toLowerCase();
     const hasSpanishChars = /[áéíóúñü]/.test(t);
-  
+
     // very common Spanish tokens
     const spanishHits = (t.match(/\b(de|que|la|el|y|en|un|una|es|no|si|con|para)\b/g) || []).length;
     // very common English tokens
     const englishHits = (t.match(/\b(the|and|to|of|in|it|is|you|that|for|on|with|as|at|this)\b/g) || []).length;
-  
+
     if (spanishHits > englishHits) return 'es';
     if (englishHits > spanishHits) return 'en';
     if (hasSpanishChars) return 'es';
-  
+
     // last resort: bias toward Spanish if there is any Spanish token at all
     if (/\b(el|la|de|que|y|en)\b/.test(t)) return 'es';
-  
+
     return 'en';
   }
 
-  private handleAIResponse(text: string): void {
-    console.log('AI response:', text);
-  
+  private handleAIResponse(data: any): void {
+    console.log('AI response:', data);
+
     // Determine the original speaker based on the AI response content
     // If AI is translating to Spanish for the patient, the original speaker was the clinician
     // If AI is translating to English for the clinician, the original speaker was the patient
     let speakerTarget: 'clinician' | 'patient';
     let isSpanish = false;
-    
-    // Check for language markers in the response
-    if (text.startsWith('[ES]') || text.includes('El doctor') || text.includes('La doctora')) {
-      // AI is translating clinician's words to Spanish for the patient
-      speakerTarget = 'clinician';
-      isSpanish = true;
-    } else if (text.startsWith('[EN]') || text.includes('The patient says') || text.includes('patient says')) {
-      // AI is translating patient's words to English for the clinician
-      speakerTarget = 'patient';
-      isSpanish = false;
-    } else {
-      // Fallback: use language detection
-      isSpanish = /[áéíóúñü]/i.test(text) ||
-                  /\b(el|la|los|las|de|que|y|en|un|una|es|son|está|están|tiene|tienen|me|te|se|nos|le|les)\b/i.test(text);
-      speakerTarget = isSpanish ? 'patient' : 'clinician';
-    }
-  
+
     this.handleTranscript({
-      speaker: speakerTarget,
+      speaker: data.speakerTarget,
       lang: isSpanish ? 'es' : 'en',
-      original_text: text,
-      english_text: isSpanish ? undefined : text,
-      spanish_text: isSpanish ? text : undefined,
+      original_text: data.text,
+      english_text: isSpanish ? undefined : data.text,
+      spanish_text: isSpanish ? data.text : undefined,
       isTranslation: true // This is an AI translation
     });
   }
@@ -711,10 +799,10 @@ Example:
 
   private detectIntentsFromText(text: string): void {
     console.log('Detecting intents from text:', text);
-    
+
     // Look for specific phrases that indicate intents
     const lowerText = text.toLowerCase();
-    
+
     if (lowerText.includes('repeat') || lowerText.includes('otra vez') || lowerText.includes('repita')) {
       this.handleIntent({
         name: 'repeat_last',
@@ -722,7 +810,7 @@ Example:
         actor: 'patient'
       });
     }
-    
+
     if (lowerText.includes('schedule') || lowerText.includes('appointment') || lowerText.includes('follow-up')) {
       this.handleIntent({
         name: 'schedule_follow_up',
@@ -730,7 +818,7 @@ Example:
         actor: 'clinician'
       });
     }
-    
+
     if (lowerText.includes('lab') || lowerText.includes('test') || lowerText.includes('order')) {
       this.handleIntent({
         name: 'send_lab_order',
@@ -774,7 +862,16 @@ Example:
       es_text: data.spanish_text,
       isTranslation: data.isTranslation || false,
       timestamp: new Date().toISOString(), // Store as ISO string for Redux
+      jsonMetadata: data.jsonMetadata, // Store JSON metadata if present
     };
+
+    console.log('📝 Adding transcript to store:', {
+      speaker: transcript.speaker,
+      lang: transcript.lang,
+      text: transcript.text,
+      isTranslation: transcript.isTranslation,
+      hasJsonMetadata: !!transcript.jsonMetadata
+    });
 
     store.dispatch(addTranscript(transcript));
 
@@ -810,7 +907,7 @@ Example:
   async disconnect(): Promise<void> {
     try {
       console.log('Disconnecting real-time service...');
-      
+
       // Stop all media tracks
       if (this.mediaStream) {
         this.mediaStream.getTracks().forEach(track => {
@@ -844,7 +941,7 @@ Example:
       // Reset state
       this.isConnected = false;
       this.config = null;
-      
+
       // Update Redux state
       store.dispatch(setConnectionStatus(false));
       store.dispatch(setActiveSpeaker(null));
@@ -869,15 +966,13 @@ Example:
       return;
     }
 
-    // Send a verification message to test if the translator role is working
-    const verificationMessage = {
-      type: 'message',
-      role: 'user',
-      content: 'Test message to verify translator role is active. Please confirm you are acting as a medical interpreter.'
-    };
-
     try {
-      this.dataChannel.send(JSON.stringify(verificationMessage));
+      this.dataChannel.send(JSON.stringify({
+        type: 'conversation.item.create',
+        item: { type: 'message', role: 'user',
+                content: [{ type: 'input_text', text: 'ping' }] }
+      }));
+      this.dataChannel.send(JSON.stringify({ type: 'response.create' }));
       console.log('Verification message sent to test translator role');
     } catch (error) {
       console.error('Error sending verification message:', error);
@@ -937,7 +1032,7 @@ Example:
     try {
       this.dataChannel.send(JSON.stringify(spanishTestMessage));
       console.log('✅ Spanish test message sent');
-      
+
       // Wait a bit then test English to Spanish
       setTimeout(() => {
         if (this.dataChannel && this.dataChannel.readyState === 'open') {
@@ -946,12 +1041,12 @@ Example:
             role: 'user',
             content: 'How long have you had these symptoms?'
           };
-          
+
           this.dataChannel.send(JSON.stringify(englishTestMessage));
           console.log('✅ English test message sent');
         }
       }, 2000);
-      
+
     } catch (error) {
       console.error('Error testing translator:', error);
     }
@@ -975,13 +1070,13 @@ Example:
   // Method to manually mute/unmute input
   toggleMute(): void {
     if (!this.mediaStream) return;
-    
+
     const audioTracks = this.mediaStream.getAudioTracks();
     if (audioTracks.length > 0) {
       const isMuted = !audioTracks[0].enabled;
       audioTracks[0].enabled = isMuted;
       console.log(`Input ${isMuted ? 'unmuted' : 'muted'}`);
-      
+
       store.dispatch(addNotification({
         type: 'info',
         message: `Input ${isMuted ? 'unmuted' : 'muted'}`

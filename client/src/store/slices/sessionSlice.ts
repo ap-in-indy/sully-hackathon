@@ -9,6 +9,12 @@ export interface TranscriptLine {
   es_text?: string;
   isTranslation: boolean; // Indicates if this is an AI translation or original speech
   timestamp: string; // Store as ISO string instead of Date object
+  jsonMetadata?: {
+    language: string;
+    translation: string;
+    original_speaker: string;
+    target_speaker: string;
+  }; // Store the JSON metadata from structured responses
 }
 
 export interface Intent {

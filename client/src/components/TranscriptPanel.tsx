@@ -53,6 +53,9 @@ const TranscriptPanel: React.FC = () => {
                   {line.speaker === 'clinician' ? 'Clinician' : 'Patient'}
                 </span>
                 <span className="language-badge">{getLanguageLabel(line.lang)}</span>
+                {line.jsonMetadata && (
+                  <span className="json-indicator" title="AI-provided metadata">🤖</span>
+                )}
                 <span className="timestamp">{formatTime(line.timestamp)}</span>
               </div>
               
@@ -70,6 +73,16 @@ const TranscriptPanel: React.FC = () => {
                 {line.es_text && line.es_text !== line.text && (
                   <div className="translation es">
                     <strong>Spanish:</strong> {line.es_text}
+                  </div>
+                )}
+
+                {/* Display JSON metadata if available */}
+                {line.jsonMetadata && (
+                  <div className="json-metadata">
+                    <details>
+                      <summary>📊 Translation Metadata</summary>
+                      <pre>{JSON.stringify(line.jsonMetadata, null, 2)}</pre>
+                    </details>
                   </div>
                 )}
               </div>
