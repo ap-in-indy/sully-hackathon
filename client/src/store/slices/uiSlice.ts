@@ -8,7 +8,7 @@ export interface UIState {
     id: string;
     type: 'success' | 'error' | 'warning' | 'info';
     message: string;
-    timestamp: Date;
+    timestamp: string; // Store as ISO string for Redux serialization
   }>;
   sidebarOpen: boolean;
 }
@@ -41,7 +41,7 @@ const uiSlice = createSlice({
         id: Date.now().toString(),
         type: action.payload.type,
         message: action.payload.message,
-        timestamp: new Date(),
+        timestamp: new Date().toISOString(), // Convert to ISO string
       });
     },
     removeNotification: (state, action: PayloadAction<string>) => {

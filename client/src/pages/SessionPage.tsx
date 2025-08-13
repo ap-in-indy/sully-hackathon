@@ -1,10 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useSelector, useDispatch } from 'react-redux';
 import { RootState } from '../store';
 import { startSession, endSession } from '../store/slices/sessionSlice';
-import { addNotification } from '../store/slices/uiSlice';
-import { setLoading } from '../store/slices/uiSlice';
+import { setLoading, addNotification } from '../store/slices/uiSlice';
 import realtimeService from '../services/realtimeService';
 import TranscriptPanel from '../components/TranscriptPanel';
 import ActionsPanel from '../components/ActionsPanel';
@@ -23,16 +22,12 @@ const SessionPage: React.FC = () => {
 
   const [isInitializing, setIsInitializing] = useState(true);
 
-  useEffect(() => {
+  const initializeSession = useCallback(async () => {
     if (!encounterId) {
       navigate('/patients');
       return;
     }
 
-    initializeSession();
-  }, [encounterId]);
-
-  const initializeSession = async () => {
     try {
       dispatch(setLoading(true));
       setIsInitializing(true);
@@ -66,7 +61,11 @@ const SessionPage: React.FC = () => {
       dispatch(setLoading(false));
       setIsInitializing(false);
     }
-  };
+  }, [encounterId, navigate, dispatch]);
+
+  useEffect(() => {
+    initializeSession();
+  }, [initializeSession]);
 
   const handleEndSession = async () => {
     try {
@@ -85,7 +84,7 @@ const SessionPage: React.FC = () => {
         });
 
         if (response.ok) {
-          const result = await response.json();
+          // Don't store the result since it's not used
           dispatch(endSession());
           dispatch(addNotification({
             type: 'success',

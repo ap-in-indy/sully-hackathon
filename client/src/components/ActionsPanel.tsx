@@ -1,7 +1,6 @@
 import React from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 import { RootState } from '../store';
-import { updateIntentStatus } from '../store/slices/sessionSlice';
 import { addNotification } from '../store/slices/uiSlice';
 import { showToolModal } from '../store/slices/uiSlice';
 import realtimeService from '../services/realtimeService';

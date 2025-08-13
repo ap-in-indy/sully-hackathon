@@ -15,8 +15,8 @@ const TranscriptPanel: React.FC = () => {
     }
   }, [transcripts]);
 
-  const formatTime = (date: Date) => {
-    return new Date(date).toLocaleTimeString([], { 
+  const formatTime = (timestamp: string) => {
+    return new Date(timestamp).toLocaleTimeString([], { 
       hour: '2-digit', 
       minute: '2-digit',
       second: '2-digit'

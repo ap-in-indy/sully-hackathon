@@ -31,6 +31,11 @@ class RealtimeService {
     this.config = config;
     
     try {
+      // Check if getUserMedia is supported
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('getUserMedia is not supported in this browser');
+      }
+
       // Get ephemeral token from server
       const tokenResponse = await fetch('/api/token', {
         method: 'POST',
@@ -67,6 +72,7 @@ class RealtimeService {
       };
 
       // Get user media for microphone input
+      console.log('Requesting microphone access...');
       this.mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
@@ -75,16 +81,41 @@ class RealtimeService {
         },
       });
 
+      console.log('Microphone access granted:', this.mediaStream.getTracks().length, 'tracks');
+
       // Add local audio track
       this.mediaStream.getTracks().forEach(track => {
         if (this.peerConnection) {
           this.peerConnection.addTrack(track, this.mediaStream!);
+          console.log('Added audio track to peer connection:', track.kind, track.id);
         }
       });
 
       // Set up data channel for events
       this.dataChannel = this.peerConnection.createDataChannel('oai-events');
       this.dataChannel.onmessage = this.handleDataChannelMessage.bind(this);
+      
+      // Wait for data channel to be open before proceeding
+      await new Promise<void>((resolve, reject) => {
+        if (!this.dataChannel) {
+          reject(new Error('Data channel not created'));
+          return;
+        }
+
+        this.dataChannel.onopen = () => {
+          console.log('Data channel opened');
+          resolve();
+        };
+
+        this.dataChannel.onerror = (error) => {
+          console.error('Data channel error:', error);
+          reject(new Error('Data channel error'));
+        };
+
+        this.dataChannel.onclose = () => {
+          console.log('Data channel closed');
+        };
+      });
 
       // Create and send offer
       const offer = await this.peerConnection.createOffer();
@@ -113,11 +144,17 @@ class RealtimeService {
 
       await this.peerConnection.setRemoteDescription(answer);
       
+      // Wait a bit for the connection to stabilize
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
       this.isConnected = true;
       store.dispatch(setConnectionStatus(true));
       store.dispatch(setError(null));
 
-      // Send system message to configure the AI
+      // Start audio level monitoring
+      this.startAudioLevelMonitoring();
+
+      // Now send system message when data channel is confirmed open
       this.sendSystemMessage();
 
     } catch (error) {
@@ -127,8 +164,46 @@ class RealtimeService {
     }
   }
 
+  private startAudioLevelMonitoring(): void {
+    if (!this.mediaStream) return;
+
+    const audioContext = new AudioContext();
+    const analyser = audioContext.createAnalyser();
+    const microphone = audioContext.createMediaStreamSource(this.mediaStream);
+    
+    microphone.connect(analyser);
+    analyser.fftSize = 256;
+    
+    const bufferLength = analyser.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+    
+    const updateAudioLevel = () => {
+      if (!this.isConnected) return;
+      
+      analyser.getByteFrequencyData(dataArray);
+      let sum = 0;
+      for (let i = 0; i < bufferLength; i++) {
+        sum += dataArray[i];
+      }
+      const average = sum / bufferLength;
+      const level = Math.min(100, (average / 128) * 100);
+      
+      store.dispatch(setAudioLevel(level));
+      requestAnimationFrame(updateAudioLevel);
+    };
+    
+    updateAudioLevel();
+  }
+
   private sendSystemMessage(): void {
     if (!this.dataChannel || !this.config) return;
+
+    // Check if data channel is ready
+    if (this.dataChannel.readyState !== 'open') {
+      console.warn('Data channel not ready, retrying in 500ms...');
+      setTimeout(() => this.sendSystemMessage(), 500);
+      return;
+    }
 
     const systemMessage = {
       type: 'message',
@@ -152,12 +227,18 @@ Keep a rolling memory of the last clinician utterance.
 The encounter ID is: ${this.config.encounterId}`,
     };
 
-    this.dataChannel.send(JSON.stringify(systemMessage));
+    try {
+      this.dataChannel.send(JSON.stringify(systemMessage));
+      console.log('System message sent successfully');
+    } catch (error) {
+      console.error('Error sending system message:', error);
+    }
   }
 
   private handleDataChannelMessage(event: MessageEvent): void {
     try {
       const data = JSON.parse(event.data);
+      console.log('Received data channel message:', data);
       
       switch (data.type) {
         case 'transcript':
@@ -186,7 +267,7 @@ The encounter ID is: ${this.config.encounterId}`,
       text: data.original_text,
       en_text: data.english_text,
       es_text: data.spanish_text,
-      timestamp: new Date(),
+      timestamp: new Date().toISOString(), // Convert to ISO string for Redux
     };
 
     store.dispatch(addTranscript(transcript));
@@ -206,7 +287,7 @@ The encounter ID is: ${this.config.encounterId}`,
       args: data.args || {},
       status: 'detected' as const,
       actor: data.actor as 'clinician' | 'patient',
-      timestamp: new Date(),
+      timestamp: new Date().toISOString(), // Convert to ISO string for Redux
     };
 
     store.dispatch(addIntent(intent));
@@ -258,7 +339,10 @@ The encounter ID is: ${this.config.encounterId}`,
 
   // Method to manually trigger repeat functionality
   async repeatLast(): Promise<void> {
-    if (!this.dataChannel) return;
+    if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
+      console.warn('Data channel not ready for repeat');
+      return;
+    }
 
     const repeatMessage = {
       type: 'message',
@@ -266,7 +350,11 @@ The encounter ID is: ${this.config.encounterId}`,
       content: 'repeat_last',
     };
 
-    this.dataChannel.send(JSON.stringify(repeatMessage));
+    try {
+      this.dataChannel.send(JSON.stringify(repeatMessage));
+    } catch (error) {
+      console.error('Error sending repeat message:', error);
+    }
   }
 }
 
