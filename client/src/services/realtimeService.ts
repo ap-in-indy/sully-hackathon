@@ -392,9 +392,16 @@ EXAMPLE BEHAVIOR:
 Patient: "Me duele el estómago" → You: "The patient says their stomach hurts"
 Clinician: "How long have you had this pain?" → You: "¿Cuánto tiempo ha tenido este dolor?"
 
-Remember: You are ONLY an interpreter. Do not diagnose, give medical advice, or add commentary. Just translate accurately between English and Spanish.`,
+Remember: You are ONLY an interpreter. Do not diagnose, give medical advice, or add commentary. Just translate accurately between English and Spanish.
+
+When replying, YOU MUST start each response with a language tag in brackets:
+[EN] for English, [ES] for Spanish.
+Example:
+- Input (Patient): "¿Cómo está?"
+- Output: "[EN] The patient says: 'How are you?'"`,
         input_audio_transcription: { model: "whisper-1" },
-        temperature: 0.6  // Lower temperature for more deterministic translations
+        temperature: 0.6,  // Lower temperature for more deterministic translations
+        turn_detection: { type: 'server_vad' },
       }
     };
 
@@ -509,6 +516,18 @@ Remember: You are ONLY an interpreter. Do not diagnose, give medical advice, or 
           this.handleAudioLevel(data);
           break;
 
+        case 'conversation.item.input_audio_transcription.delta':
+          // optional: accumulate partial transcript for live captions
+          break;
+        
+        case 'response.content_part.done':
+          // optional: inspect final content parts
+          break;
+        
+        case 'response.output_item.done':
+          // optional: marks an output item finalized
+          break;
+
         default:
           console.log('Unknown message type:', data.type);
       }
@@ -619,82 +638,52 @@ Remember: You are ONLY an interpreter. Do not diagnose, give medical advice, or 
   }
 
   private determineSpeaker(data: any): 'clinician' | 'patient' {
-    // Extract transcript text from the data
-    const text = data.transcript || data.item?.content?.[0]?.transcript || "";
-    
-    // Detect language to determine speaker
-    // Clinician speaks English, patient speaks Spanish
-    const lang = this.detectLanguage(text);
+    const text = data.transcript || data.item?.content?.[0]?.transcript || '';
+    const langFromEvent = data.language || data.item?.content?.[0]?.language; // check if present
+    const lang = (langFromEvent === 'es' || langFromEvent === 'en')
+      ? langFromEvent
+      : this.detectLanguage(text);
+  
     return lang === 'en' ? 'clinician' : 'patient';
   }
 
   private detectLanguage(text: string): 'en' | 'es' {
-    if (!text || text.trim().length === 0) {
-      return 'en'; // Default to English if no text
-    }
-    
-    const cleanText = text.toLowerCase().trim();
-    
-    // Spanish-specific patterns and common words
-    const spanishPatterns = [
-      /[áéíóúñü]/i,  // Spanish accented characters
-      /\b(el|la|los|las|de|que|y|en|un|una|es|son|está|están|tiene|tienen|me|te|se|nos|le|les|mi|tu|su|nuestro|vuestro|su|este|esta|eso|esa|aquí|allí|ahora|siempre|nunca|muy|más|menos|bien|mal|bueno|buena|malo|mala)\b/,
-      /\b(hola|gracias|por favor|perdón|disculpe|sí|no|bien|mal|dolor|fiebre|cabeza|estómago|brazo|pierna|ojos|oídos|nariz|boca|corazón|pulmones|hígado|riñones)\b/
-    ];
-    
-    // English-specific patterns and common words
-    const englishPatterns = [
-      /\b(the|a|an|and|or|but|in|on|at|to|for|of|with|by|from|up|down|out|off|over|under|this|that|these|those|is|are|was|were|be|been|being|have|has|had|do|does|did|will|would|could|should|can|may|might|must)\b/,
-      /\b(hello|thank you|please|sorry|excuse me|yes|no|good|bad|pain|fever|head|stomach|arm|leg|eyes|ears|nose|mouth|heart|lungs|liver|kidneys)\b/
-    ];
-    
-    // Count Spanish and English matches
-    let spanishScore = 0;
-    let englishScore = 0;
-    
-    spanishPatterns.forEach(pattern => {
-      if (pattern.test(cleanText)) {
-        spanishScore += 1;
-      }
-    });
-    
-    englishPatterns.forEach(pattern => {
-      if (pattern.test(cleanText)) {
-        englishScore += 1;
-      }
-    });
-    
-    // If we have a clear winner, use it
-    if (spanishScore > englishScore) {
-      return 'es';
-    } else if (englishScore > spanishScore) {
-      return 'en';
-    }
-    
-    // If scores are equal, check for Spanish accented characters as a tiebreaker
-    if (/[áéíóúñü]/i.test(cleanText)) {
-      return 'es';
-    }
-    
-    // Default to English if unclear
+    if (!text || !text.trim()) return 'en';
+  
+    const t = text.toLowerCase();
+    const hasSpanishChars = /[áéíóúñü]/.test(t);
+  
+    // very common Spanish tokens
+    const spanishHits = (t.match(/\b(de|que|la|el|y|en|un|una|es|no|si|con|para)\b/g) || []).length;
+    // very common English tokens
+    const englishHits = (t.match(/\b(the|and|to|of|in|it|is|you|that|for|on|with|as|at|this)\b/g) || []).length;
+  
+    if (spanishHits > englishHits) return 'es';
+    if (englishHits > spanishHits) return 'en';
+    if (hasSpanishChars) return 'es';
+  
+    // last resort: bias toward Spanish if there is any Spanish token at all
+    if (/\b(el|la|de|que|y|en)\b/.test(t)) return 'es';
+  
     return 'en';
   }
 
   private handleAIResponse(text: string): void {
     console.log('AI response:', text);
-    
-    // Determine if this is a translation response
-    // The AI should now be acting as a translator, so responses should be in the target language
-    const isSpanishResponse = /[áéíóúñü]/i.test(text) || 
-                             /\b(el|la|los|las|de|que|y|en|un|una|es|son|está|están|tiene|tienen|me|te|se|nos|le|les|mi|tu|su|nuestro|vuestro|su|este|esta|eso|esa|aquí|allí|ahora|siempre|nunca|muy|más|menos|bien|mal|bueno|buena|malo|mala)\b/i.test(text);
-    
-    // Create transcript entry for AI response
+  
+    // naive language check; you can keep your helper if you prefer
+    const isSpanish = /[áéíóúñü]/i.test(text) ||
+                      /\b(el|la|los|las|de|que|y|en|un|una|es|son|está|están|tiene|tienen|me|te|se|nos|le|les)\b/i.test(text);
+  
+    // IMPORTANT: attribute to the TARGET listener
+    const speakerTarget: 'clinician' | 'patient' = isSpanish ? 'patient' : 'clinician';
+  
     this.handleTranscript({
-      speaker: 'clinician', // AI responses are treated as clinician
-      lang: isSpanishResponse ? 'es' : 'en',
+      speaker: speakerTarget,
+      lang: isSpanish ? 'es' : 'en',
       original_text: text,
-      english_text: isSpanishResponse ? undefined : text,
-      spanish_text: isSpanishResponse ? text : undefined
+      english_text: isSpanish ? undefined : text,
+      spanish_text: isSpanish ? text : undefined
     });
   }
 
