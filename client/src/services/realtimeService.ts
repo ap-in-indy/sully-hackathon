@@ -325,38 +325,9 @@ class RealtimeService {
   }
 
   private addDemoTranscripts(): void {
-    // eslint-disable-next-line no-unreachable
-    return;
-    
-    const demoTranscripts = [
-      {
-        speaker: 'clinician' as const,
-        lang: 'en' as const,
-        original_text: 'Hello, how are you feeling today?',
-        english_text: 'Hello, how are you feeling today?',
-        spanish_text: 'Hola, ¿cómo te sientes hoy?'
-      },
-      {
-        speaker: 'patient' as const,
-        lang: 'es' as const,
-        original_text: 'Me duele la cabeza y tengo fiebre.',
-        english_text: 'I have a headache and fever.',
-        spanish_text: 'Me duele la cabeza y tengo fiebre.'
-      },
-      {
-        speaker: 'clinician' as const,
-        lang: 'en' as const,
-        original_text: 'I understand. Let me check your temperature.',
-        english_text: 'I understand. Let me check your temperature.',
-        spanish_text: 'Entiendo. Déjame revisar tu temperatura.'
-      }
-    ];
-
-    demoTranscripts.forEach((transcript, index) => {
-      setTimeout(() => {
-        this.handleTranscript(transcript);
-      }, index * 2000);
-    });
+    // Demo transcripts are currently disabled
+    // This method can be enabled for testing purposes
+    console.log('Demo transcripts disabled');
   }
 
   private sendSessionConfiguration(): void {
