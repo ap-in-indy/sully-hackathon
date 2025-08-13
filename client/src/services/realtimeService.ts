@@ -28,6 +28,12 @@ class RealtimeService {
   private config: RealtimeConfig | null = null;
 
   async initialize(config: RealtimeConfig): Promise<void> {
+    // Clean up any existing session first
+    if (this.isConnected || this.peerConnection || this.dataChannel) {
+      console.log('Cleaning up existing session before initializing new one...');
+      await this.disconnect();
+    }
+
     this.config = config;
     
     try {
@@ -98,7 +104,6 @@ class RealtimeService {
       };
 
       // Get user media for microphone input
-      console.log('Requesting microphone access...');
       this.mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
@@ -107,13 +112,13 @@ class RealtimeService {
         },
       });
 
-      console.log('Microphone access granted:', this.mediaStream.getTracks().length, 'tracks');
+      console.log('Audio stream obtained:', this.mediaStream.getTracks().map(t => ({ kind: t.kind, enabled: t.enabled })));
 
       // Add local audio track
       this.mediaStream.getTracks().forEach(track => {
         if (this.peerConnection) {
           this.peerConnection.addTrack(track, this.mediaStream!);
-          console.log('Added audio track to peer connection:', track.kind, track.id);
+          console.log('Added audio track to peer connection:', track.kind);
         }
       });
 
@@ -121,34 +126,18 @@ class RealtimeService {
       this.dataChannel = this.peerConnection.createDataChannel('oai-events');
       this.dataChannel.onmessage = this.handleDataChannelMessage.bind(this);
       
-      // Set up data channel event handlers
+      // Wait for data channel to be open before proceeding
       this.dataChannel.onopen = () => {
-        console.log('Data channel opened successfully');
-        this.isConnected = true;
-        store.dispatch(setConnectionStatus(true));
-        store.dispatch(setError(null));
-        
-        // Start audio level monitoring
-        this.startAudioLevelMonitoring();
-        
-        // Send system message immediately when channel opens
+        console.log('Data channel opened, sending system message');
         this.sendSystemMessage();
       };
 
       this.dataChannel.onerror = (error) => {
         console.error('Data channel error:', error);
-        // Don't disconnect on error, try to recover
       };
 
       this.dataChannel.onclose = () => {
         console.log('Data channel closed');
-        // Try to reconnect if this wasn't an intentional close
-        if (this.isConnected && this.peerConnection?.connectionState === 'connected') {
-          console.log('Attempting to reconnect data channel...');
-          setTimeout(() => {
-            this.reconnectDataChannel();
-          }, 1000);
-        }
       };
 
       // Create and send offer
@@ -158,7 +147,6 @@ class RealtimeService {
       const baseUrl = 'https://api.openai.com/v1/realtime';
       const model = 'gpt-4o-realtime-preview-2025-06-03';
       
-      console.log('Sending offer to OpenAI Realtime API...');
       const sdpResponse = await fetch(`${baseUrl}?model=${model}`, {
         method: 'POST',
         body: offer.sdp,
@@ -169,26 +157,25 @@ class RealtimeService {
       });
 
       if (!sdpResponse.ok) {
-        const errorText = await sdpResponse.text();
-        console.error('OpenAI API error:', sdpResponse.status, errorText);
-        console.warn('Falling back to demo mode due to OpenAI API error');
-        this.initializeDemoMode(config);
-        return;
+        throw new Error('Failed to establish WebRTC connection');
       }
-
-      const answerSdp = await sdpResponse.text();
-      console.log('Received answer from OpenAI API');
 
       const answer: RTCSessionDescriptionInit = {
         type: 'answer' as RTCSdpType,
-        sdp: answerSdp,
+        sdp: await sdpResponse.text(),
       };
 
       await this.peerConnection.setRemoteDescription(answer);
-      console.log('Set remote description');
       
-      // Wait for the connection to stabilize and data channel to open
-      await this.waitForDataChannelOpen();
+      this.isConnected = true;
+      store.dispatch(setConnectionStatus(true));
+      store.dispatch(setError(null));
+
+      // Start audio level monitoring
+      this.startAudioLevelMonitoring();
+
+      // Note: System message will be sent when data channel opens
+      // No need to call sendSystemMessage() here anymore
 
     } catch (error) {
       console.error('Error initializing realtime service:', error);
@@ -371,56 +358,49 @@ class RealtimeService {
 
   private sendSystemMessage(): void {
     if (!this.dataChannel || !this.config) return;
-
-    // Check if data channel is ready
+    
+    // Ensure data channel is open before sending
     if (this.dataChannel.readyState !== 'open') {
-      console.warn('Data channel not ready, retrying in 500ms...');
-      setTimeout(() => this.sendSystemMessage(), 500);
+      console.log('Data channel not ready, retrying in 100ms...');
+      setTimeout(() => this.sendSystemMessage(), 100);
       return;
     }
 
     const systemMessage = {
       type: 'message',
       role: 'system',
-      content: `You are a medical interpreter between an English-speaking clinician and a Spanish-speaking patient.
+      content: `You are a medical interpreter facilitating communication between an English-speaking clinician and a Spanish-speaking patient.
 
-Always produce JSON events of shape {type: "transcript"|"intent", ...}.
+CRITICAL INSTRUCTIONS:
+1. You must ALWAYS respond in the appropriate language based on who is speaking
+2. When the patient speaks Spanish, translate to English for the clinician
+3. When the clinician speaks English, translate to Spanish for the patient
+4. Maintain medical terminology accuracy in both languages
+5. Be concise and clear in your translations
+6. Do NOT add commentary or explanations unless specifically asked
+7. Focus on accurate medical interpretation only
 
-Intents allowed: repeat_last, schedule_follow_up, send_lab_order.
+CONVERSATION FLOW:
+- Patient speaks Spanish → You translate to English for clinician
+- Clinician speaks English → You translate to Spanish for patient
+- Keep responses brief and medical-focused
+- Use formal medical language appropriate for healthcare settings
 
-Only infer schedule_follow_up or send_lab_order from clinician speech.
+EXAMPLE BEHAVIOR:
+Patient: "Me duele el estómago" → You: "The patient says their stomach hurts"
+Clinician: "How long have you had this pain?" → You: "¿Cuánto tiempo ha tenido este dolor?"
 
-Treat phrases like "repeat that", "please repeat", "I did not understand", "otra vez", "repita por favor" as repeat_last when spoken by the patient.
-
-For each user utterance, emit:
-transcript: {speaker, lang, original_text, english_text, spanish_text}
-optional intent: {name, args}
-
-Keep a rolling memory of the last clinician utterance.
-
-The encounter ID is: ${this.config.encounterId}`,
+Remember: You are ONLY an interpreter. Do not diagnose, give medical advice, or add commentary. Just translate accurately between English and Spanish.`
     };
 
     try {
       this.dataChannel.send(JSON.stringify(systemMessage));
       console.log('System message sent successfully');
-      
-      // Add a small delay before allowing other messages
-      setTimeout(() => {
-        console.log('Ready to receive voice input');
-      }, 1000);
-      
     } catch (error) {
       console.error('Error sending system message:', error);
-      // If sending fails, the data channel might be closed, try to reconnect
-      if (this.dataChannel.readyState !== 'open') {
-        console.log('Data channel not ready, attempting to reconnect...');
-        setTimeout(() => {
-          this.reconnectDataChannel();
-        }, 1000);
-      }
     }
   }
+  
 
   private handleDataChannelMessage(event: MessageEvent): void {
     try {
@@ -428,21 +408,291 @@ The encounter ID is: ${this.config.encounterId}`,
       console.log('Received data channel message:', data);
       
       switch (data.type) {
+        // Handle input audio transcription (patient/clinician speech)
+        case 'input_audio_buffer.speech_started':
+          this.handleSpeechStarted(data);
+          break;
+          
+        case 'input_audio_buffer.speech_stopped':
+          this.handleSpeechStopped(data);
+          break;
+          
+        case 'input_audio_buffer.committed':
+          this.handleSpeechCommitted(data);
+          break;
+          
+        case 'conversation.item.input_audio_transcription.completed':
+          this.handleInputTranscriptionCompleted(data);
+          break;
+
+        // Handle AI response and output
+        case 'response.created':
+          this.handleResponseCreated(data);
+          break;
+          
+        case 'response.content_part.added':
+          this.handleContentPartAdded(data);
+          break;
+          
+        case 'response.audio_transcript.delta':
+          this.handleAudioTranscriptDelta(data);
+          break;
+          
+        case 'response.audio_transcript.done':
+          this.handleAudioTranscriptDone(data);
+          break;
+          
+        case 'response.audio.done':
+          this.handleAudioDone(data);
+          break;
+          
+        case 'response.done':
+          this.handleResponseDone(data);
+          break;
+
+        // Handle audio buffer events
+        case 'output_audio_buffer.started':
+          this.handleStartSpeaking();
+          break;
+          
+        case 'output_audio_buffer.stopped':
+          this.handleStopSpeaking();
+          break;
+
+        // Handle conversation events
+        case 'conversation.item.created':
+          this.handleConversationItemCreated(data);
+          break;
+
+        // Handle session events
+        case 'session.created':
+          console.log('Session created:', data);
+          break;
+          
+        case 'session.updated':
+          console.log('Session updated:', data);
+          break;
+
+        // Handle rate limits
+        case 'rate_limits.updated':
+          console.log('Rate limits updated:', data);
+          break;
+
+        // Legacy cases for backward compatibility
         case 'transcript':
           this.handleTranscript(data);
           break;
+          
         case 'intent':
           this.handleIntent(data);
           break;
+          
         case 'speaker_change':
           this.handleSpeakerChange(data);
           break;
+          
         case 'audio_level':
           this.handleAudioLevel(data);
           break;
+
+        default:
+          console.log('Unknown message type:', data.type);
       }
     } catch (error) {
       console.error('Error handling data channel message:', error);
+    }
+  }
+
+  private handleSpeechStarted(data: any): void {
+    console.log('Speech started:', data);
+    // Could be used to show "listening" indicator
+  }
+
+  private handleSpeechStopped(data: any): void {
+    console.log('Speech stopped:', data);
+    // Could be used to hide "listening" indicator
+  }
+
+  private handleSpeechCommitted(data: any): void {
+    console.log('Speech committed:', data);
+    // Speech has been processed and committed to the conversation
+  }
+
+  private handleInputTranscriptionCompleted(data: any): void {
+    console.log('Input transcription completed:', data);
+    
+    // Extract transcript from the completed transcription
+    const transcript = data.transcript || data.item?.content?.[0]?.transcript;
+    if (!transcript) {
+      console.warn('No transcript found in input transcription:', data);
+      return;
+    }
+
+    // Determine speaker and language
+    const speaker = this.determineSpeaker(data);
+    const lang = this.detectLanguage(transcript);
+
+    // Create transcript entry
+    this.handleTranscript({
+      speaker,
+      lang,
+      original_text: transcript,
+      english_text: lang === 'en' ? transcript : undefined,
+      spanish_text: lang === 'es' ? transcript : undefined
+    });
+  }
+
+  private handleResponseCreated(data: any): void {
+    console.log('AI response created:', data);
+    // AI is about to start responding
+  }
+
+  private handleContentPartAdded(data: any): void {
+    console.log('Content part added:', data);
+    
+    // Check if this is a text response that should be translated
+    if (data.item?.content?.[0]?.type === 'text') {
+      const text = data.item.content[0].text;
+      if (text) {
+        // This is the AI's text response - we can translate it if needed
+        this.handleAIResponse(text);
+      }
+    }
+  }
+
+  private handleAudioTranscriptDelta(data: any): void {
+    console.log('Audio transcript delta:', data);
+    
+    // This is the AI speaking - we can show real-time transcription
+    if (data.delta?.text) {
+      this.handleAIRealTimeTranscript(data.delta.text);
+    }
+  }
+
+  private handleAudioTranscriptDone(data: any): void {
+    console.log('Audio transcript done:', data);
+    
+    // AI finished speaking - final transcript
+    if (data.transcript) {
+      this.handleAIResponse(data.transcript);
+    }
+  }
+
+  private handleAudioDone(data: any): void {
+    console.log('Audio done:', data);
+    this.handleStopSpeaking();
+  }
+
+  private handleResponseDone(data: any): void {
+    console.log('Response done:', data);
+    // AI finished responding completely
+  }
+
+  private handleConversationItemCreated(data: any): void {
+    console.log('Conversation item created:', data);
+    
+    // Check if this item contains intents or actions
+    if (data.item?.content) {
+      for (const content of data.item.content) {
+        if (content.type === 'text') {
+          // Look for intents in the text
+          this.detectIntentsFromText(content.text);
+        }
+      }
+    }
+  }
+
+  private determineSpeaker(data: any): 'clinician' | 'patient' {
+    // For now, assume patient (since clinician usually speaks English)
+    // In a real implementation, you might use speaker diarization or other methods
+    return 'patient';
+  }
+
+  private detectLanguage(text: string): 'en' | 'es' {
+    // Simple language detection - can be improved
+    const spanishPattern = /[áéíóúñü]/i;
+    const englishPattern = /[a-zA-Z]/;
+    
+    if (spanishPattern.test(text)) {
+      return 'es';
+    } else if (englishPattern.test(text)) {
+      return 'en';
+    }
+    
+    // Default to English if unclear
+    return 'en';
+  }
+
+  private handleAIResponse(text: string): void {
+    console.log('AI response:', text);
+    
+    // Create transcript entry for AI response
+    this.handleTranscript({
+      speaker: 'clinician', // AI responses are treated as clinician
+      lang: 'en', // AI responses are in English
+      original_text: text,
+      english_text: text,
+      spanish_text: undefined // Could be translated to Spanish if needed
+    });
+  }
+
+  private handleAIRealTimeTranscript(text: string): void {
+    console.log('AI real-time transcript:', text);
+    // Could be used to show real-time AI speech
+  }
+
+  private detectIntentsFromText(text: string): void {
+    console.log('Detecting intents from text:', text);
+    
+    // Look for specific phrases that indicate intents
+    const lowerText = text.toLowerCase();
+    
+    if (lowerText.includes('repeat') || lowerText.includes('otra vez') || lowerText.includes('repita')) {
+      this.handleIntent({
+        name: 'repeat_last',
+        args: {},
+        actor: 'patient'
+      });
+    }
+    
+    if (lowerText.includes('schedule') || lowerText.includes('appointment') || lowerText.includes('follow-up')) {
+      this.handleIntent({
+        name: 'schedule_follow_up',
+        args: {},
+        actor: 'clinician'
+      });
+    }
+    
+    if (lowerText.includes('lab') || lowerText.includes('test') || lowerText.includes('order')) {
+      this.handleIntent({
+        name: 'send_lab_order',
+        args: {},
+        actor: 'clinician'
+      });
+    }
+  }
+
+  private handleStartSpeaking(): void {
+    console.log('AI started speaking - muting input');
+    // Mute input tracks to prevent voice overlap
+    if (this.mediaStream) {
+      this.mediaStream.getTracks().forEach(track => {
+        if (track.kind === 'audio') {
+          track.enabled = false;
+        }
+      });
+    }
+  }
+
+  private handleStopSpeaking(): void {
+    console.log('AI stopped speaking - unmuting input');
+    // Unmute input tracks
+    if (this.mediaStream) {
+      this.mediaStream.getTracks().forEach(track => {
+        if (track.kind === 'audio') {
+          track.enabled = true;
+        }
+      });
     }
   }
 
@@ -454,7 +704,7 @@ The encounter ID is: ${this.config.encounterId}`,
       text: data.original_text,
       en_text: data.english_text,
       es_text: data.spanish_text,
-      timestamp: new Date().toISOString(), // Convert to ISO string for Redux
+      timestamp: new Date().toISOString(), // Store as ISO string for Redux
     };
 
     store.dispatch(addTranscript(transcript));
@@ -474,7 +724,7 @@ The encounter ID is: ${this.config.encounterId}`,
       args: data.args || {},
       status: 'detected' as const,
       actor: data.actor as 'clinician' | 'patient',
-      timestamp: new Date().toISOString(), // Convert to ISO string for Redux
+      timestamp: new Date().toISOString(), // Store as ISO string for Redux
     };
 
     store.dispatch(addIntent(intent));
@@ -490,30 +740,49 @@ The encounter ID is: ${this.config.encounterId}`,
 
   async disconnect(): Promise<void> {
     try {
+      console.log('Disconnecting real-time service...');
+      
+      // Stop all media tracks
       if (this.mediaStream) {
-        this.mediaStream.getTracks().forEach(track => track.stop());
+        this.mediaStream.getTracks().forEach(track => {
+          console.log('Stopping track:', track.kind, track.id);
+          track.stop();
+        });
         this.mediaStream = null;
       }
 
+      // Close data channel
       if (this.dataChannel) {
+        console.log('Closing data channel...');
         this.dataChannel.close();
         this.dataChannel = null;
       }
 
+      // Close peer connection
       if (this.peerConnection) {
+        console.log('Closing peer connection...');
         this.peerConnection.close();
         this.peerConnection = null;
       }
 
+      // Remove audio element
       if (this.audioElement) {
+        console.log('Removing audio element...');
         this.audioElement.remove();
         this.audioElement = null;
       }
 
+      // Reset state
       this.isConnected = false;
+      this.config = null;
+      
+      // Update Redux state
       store.dispatch(setConnectionStatus(false));
       store.dispatch(setActiveSpeaker(null));
       store.dispatch(setAudioLevel(0));
+      store.dispatch(setError(null));
+
+      console.log('Real-time service disconnected successfully');
 
     } catch (error) {
       console.error('Error disconnecting:', error);
@@ -526,10 +795,7 @@ The encounter ID is: ${this.config.encounterId}`,
 
   // Method to manually trigger repeat functionality
   async repeatLast(): Promise<void> {
-    if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
-      console.warn('Data channel not ready for repeat');
-      return;
-    }
+    if (!this.dataChannel) return;
 
     const repeatMessage = {
       type: 'message',
@@ -537,12 +803,7 @@ The encounter ID is: ${this.config.encounterId}`,
       content: 'repeat_last',
     };
 
-    try {
-      this.dataChannel.send(JSON.stringify(repeatMessage));
-      console.log('Repeat message sent successfully');
-    } catch (error) {
-      console.error('Error sending repeat message:', error);
-    }
+    this.dataChannel.send(JSON.stringify(repeatMessage));
   }
 
   // Method to test the connection by sending a test message
@@ -579,6 +840,30 @@ The encounter ID is: ${this.config.encounterId}`,
       peerConnectionState: this.peerConnection?.connectionState || 'none',
       iceConnectionState: this.peerConnection?.iceConnectionState || 'none',
     };
+  }
+
+  // Method to manually mute/unmute input
+  toggleMute(): void {
+    if (!this.mediaStream) return;
+    
+    const audioTracks = this.mediaStream.getAudioTracks();
+    if (audioTracks.length > 0) {
+      const isMuted = !audioTracks[0].enabled;
+      audioTracks[0].enabled = isMuted;
+      console.log(`Input ${isMuted ? 'unmuted' : 'muted'}`);
+      
+      store.dispatch(addNotification({
+        type: 'info',
+        message: `Input ${isMuted ? 'unmuted' : 'muted'}`
+      }));
+    }
+  }
+
+  // Method to get mute status
+  isMuted(): boolean {
+    if (!this.mediaStream) return false;
+    const audioTracks = this.mediaStream.getAudioTracks();
+    return audioTracks.length > 0 ? !audioTracks[0].enabled : false;
   }
 }
 

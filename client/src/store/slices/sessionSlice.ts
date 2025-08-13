@@ -7,7 +7,7 @@ export interface TranscriptLine {
   text: string;
   en_text?: string;
   es_text?: string;
-  timestamp: string; // Store as ISO string for Redux serialization
+  timestamp: string; // Store as ISO string instead of Date object
 }
 
 export interface Intent {
@@ -16,7 +16,7 @@ export interface Intent {
   args: any;
   status: 'detected' | 'pending' | 'completed' | 'failed';
   actor: 'clinician' | 'patient';
-  timestamp: string; // Store as ISO string for Redux serialization
+  timestamp: string; // Store as ISO string instead of Date object
 }
 
 export interface SessionState {

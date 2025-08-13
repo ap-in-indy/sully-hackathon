@@ -23,11 +23,6 @@ const SessionPage: React.FC = () => {
   const [isInitializing, setIsInitializing] = useState(true);
 
   const initializeSession = useCallback(async () => {
-    if (!encounterId) {
-      navigate('/patients');
-      return;
-    }
-
     try {
       dispatch(setLoading(true));
       setIsInitializing(true);
@@ -42,13 +37,8 @@ const SessionPage: React.FC = () => {
 
       dispatch(startSession(mockSession));
 
-      // Initialize real-time voice communication with timeout
-      const initPromise = realtimeService.initialize(mockSession);
-      const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Initialization timeout - please check your OpenAI API key and try again')), 30000)
-      );
-
-      await Promise.race([initPromise, timeoutPromise]);
+      // Initialize real-time voice communication
+      await realtimeService.initialize(mockSession);
 
       dispatch(addNotification({
         type: 'success',
@@ -59,18 +49,23 @@ const SessionPage: React.FC = () => {
       console.error('Error initializing session:', error);
       dispatch(addNotification({
         type: 'error',
-        message: error instanceof Error ? error.message : 'Failed to initialize session. Please try again.'
+        message: 'Failed to initialize session. Please try again.'
       }));
       navigate('/patients');
     } finally {
       dispatch(setLoading(false));
       setIsInitializing(false);
     }
-  }, [encounterId, navigate, dispatch]);
+  }, [encounterId, dispatch, navigate]);
 
   useEffect(() => {
+    if (!encounterId) {
+      navigate('/patients');
+      return;
+    }
+
     initializeSession();
-  }, [initializeSession]);
+  }, [encounterId, navigate, initializeSession]);
 
   const handleEndSession = async () => {
     try {
@@ -89,7 +84,6 @@ const SessionPage: React.FC = () => {
         });
 
         if (response.ok) {
-          // Don't store the result since it's not used
           dispatch(endSession());
           dispatch(addNotification({
             type: 'success',
@@ -195,6 +189,27 @@ const SessionPage: React.FC = () => {
               disabled={!session.isConnected}
             >
               🧪 Test Connection
+            </button>
+
+            <button 
+              className={`btn btn-sm ${realtimeService.isMuted() ? 'btn-danger' : 'btn-secondary'}`}
+              onClick={() => realtimeService.toggleMute()}
+              disabled={!session.isConnected}
+            >
+              {realtimeService.isMuted() ? '🔇 Unmute' : '🎤 Mute'}
+            </button>
+
+            <button 
+              className="btn btn-outline btn-sm"
+              onClick={() => {
+                console.log('Current session state:', session);
+                dispatch(addNotification({
+                  type: 'info',
+                  message: 'Session state logged to console'
+                }));
+              }}
+            >
+              Debug Session
             </button>
           </div>
         </div>

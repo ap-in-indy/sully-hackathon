@@ -1,8 +1,7 @@
 import React from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 import { RootState } from '../store';
-import { addNotification } from '../store/slices/uiSlice';
-import { showToolModal } from '../store/slices/uiSlice';
+import { showToolModal, addNotification } from '../store/slices/uiSlice';
 import realtimeService from '../services/realtimeService';
 import './ActionsPanel.css';
 
