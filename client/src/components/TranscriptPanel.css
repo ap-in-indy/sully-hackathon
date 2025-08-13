@@ -1,0 +1,177 @@
+.transcript-panel-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.transcript-content {
+  flex: 1;
+  overflow-y: auto;
+  padding-right: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.transcript-content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.transcript-content::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+  border-radius: 3px;
+}
+
+.transcript-content::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 3px;
+}
+
+.transcript-content::-webkit-scrollbar-thumb:hover {
+  background: var(--text-secondary);
+}
+
+.empty-transcript {
+  text-align: center;
+  padding: 2rem;
+  color: var(--text-secondary);
+}
+
+.empty-transcript p {
+  margin: 0.5rem 0;
+}
+
+.empty-transcript p:first-child {
+  font-size: 1.125rem;
+  color: var(--text-primary);
+}
+
+.transcript-line {
+  margin-bottom: 1rem;
+  padding: 1rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+}
+
+.transcript-line.clinician {
+  border-left: 4px solid var(--primary-color);
+  background: linear-gradient(135deg, rgba(14, 165, 233, 0.05) 0%, rgba(14, 165, 233, 0.02) 100%);
+}
+
+.transcript-line.patient {
+  border-left: 4px solid var(--secondary-color);
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.05) 0%, rgba(16, 185, 129, 0.02) 100%);
+}
+
+.transcript-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.speaker-icon {
+  font-size: 1.25rem;
+}
+
+.speaker-name {
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: 0.875rem;
+}
+
+.language-badge {
+  background: var(--primary-color);
+  color: white;
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.25rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
+.timestamp {
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  margin-left: auto;
+}
+
+.transcript-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.original-text {
+  font-size: 0.875rem;
+  line-height: 1.4;
+  color: var(--text-primary);
+}
+
+.translation {
+  font-size: 0.875rem;
+  line-height: 1.4;
+  padding: 0.5rem;
+  border-radius: 0.25rem;
+  border-left: 3px solid;
+}
+
+.translation.en {
+  background: rgba(14, 165, 233, 0.1);
+  border-left-color: var(--primary-color);
+  color: var(--text-primary);
+}
+
+.translation.es {
+  background: rgba(16, 185, 129, 0.1);
+  border-left-color: var(--secondary-color);
+  color: var(--text-primary);
+}
+
+.translation strong {
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.transcript-footer {
+  border-top: 1px solid var(--border-color);
+  padding-top: 0.75rem;
+}
+
+.transcript-stats {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+@media (max-width: 768px) {
+  .transcript-header {
+    gap: 0.25rem;
+  }
+  
+  .speaker-name {
+    font-size: 0.8rem;
+  }
+  
+  .language-badge {
+    font-size: 0.7rem;
+    padding: 0.2rem 0.4rem;
+  }
+  
+  .timestamp {
+    font-size: 0.7rem;
+  }
+  
+  .transcript-line {
+    padding: 0.75rem;
+    margin-bottom: 0.75rem;
+  }
+  
+  .original-text,
+  .translation {
+    font-size: 0.8rem;
+  }
+}

@@ -122,6 +122,13 @@ Save these and their history to the database.
 
 * (How do we get patients more of what they want while not overburdening the physician any further?)
 
+# Risks / Concerns
+
+* How well does the Realtime API from OpenAI perform?
+* Is overlapping audio, speech, etc. going to be a problem in practice?
+* Is it going to know who is speaking between the clinician and patient?
+* Can you ask the system instructions / ai persona to transcribe both in English and in Spanish for any text?
+
 --------------------------------------------------------
 
 4-Hour Hackathon scope cuts

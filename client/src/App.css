@@ -1,0 +1,85 @@
+.App {
+  min-height: 100vh;
+  background-color: var(--bg-secondary);
+}
+
+.App-header {
+  background-color: var(--bg-primary);
+  border-bottom: 1px solid var(--border-color);
+  padding: 1rem 0;
+  box-shadow: var(--shadow-sm);
+}
+
+.App-header h1 {
+  color: var(--primary-color);
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+.main-content {
+  padding: 2rem 0;
+}
+
+.page-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 1rem;
+}
+
+.session-layout {
+  display: grid;
+  grid-template-columns: 1fr 2fr 1fr;
+  gap: 1rem;
+  height: calc(100vh - 120px);
+  padding: 1rem;
+}
+
+.clinician-panel,
+.patient-panel {
+  background: var(--bg-primary);
+  border-radius: 0.5rem;
+  padding: 1rem;
+  box-shadow: var(--shadow-md);
+  border: 1px solid var(--border-color);
+}
+
+.transcript-panel {
+  background: var(--bg-primary);
+  border-radius: 0.5rem;
+  padding: 1rem;
+  box-shadow: var(--shadow-md);
+  border: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+}
+
+.transcript-content {
+  flex: 1;
+  overflow-y: auto;
+  margin-bottom: 1rem;
+}
+
+.actions-panel {
+  background: var(--bg-primary);
+  border-radius: 0.5rem;
+  padding: 1rem;
+  box-shadow: var(--shadow-md);
+  border: 1px solid var(--border-color);
+  overflow-y: auto;
+}
+
+@media (max-width: 1024px) {
+  .session-layout {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto auto;
+    height: auto;
+  }
+  
+  .clinician-panel,
+  .patient-panel,
+  .transcript-panel,
+  .actions-panel {
+    min-height: 300px;
+  }
+}
