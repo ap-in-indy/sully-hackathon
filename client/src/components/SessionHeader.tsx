@@ -11,7 +11,10 @@ const SessionHeader: React.FC<SessionHeaderProps> = ({ encounterId, onEndSession
   return (
     <div className="session-header">
       <div className="session-info">
-        <h2>Medical Translation Session</h2>
+        <h2>
+          Medical Translation Session
+          <span className="system-badge">JSON Metadata System</span>
+        </h2>
         <div className="session-details">
           <span className="encounter-id">Encounter: {encounterId}</span>
           <div className={`connection-status ${isConnected ? 'connected' : 'disconnected'}`}>

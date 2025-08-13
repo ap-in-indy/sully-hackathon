@@ -44,12 +44,37 @@
   color: var(--text-primary);
 }
 
+.system-info {
+  margin-top: 1.5rem;
+  padding: 1rem;
+  background: rgba(14, 165, 233, 0.05);
+  border-radius: 0.5rem;
+  border: 1px solid rgba(14, 165, 233, 0.2);
+}
+
+.system-info p {
+  margin: 0.5rem 0;
+  font-weight: 600;
+}
+
+.system-info ul {
+  margin: 0.5rem 0;
+  padding-left: 1.5rem;
+  text-align: left;
+}
+
+.system-info li {
+  margin: 0.25rem 0;
+  font-size: 0.875rem;
+}
+
 .transcript-line {
   margin-bottom: 1rem;
   padding: 1rem;
   border-radius: 0.5rem;
   border: 1px solid var(--border-color);
   background: var(--bg-secondary);
+  transition: all 0.2s ease;
 }
 
 .transcript-line.clinician {
@@ -60,6 +85,17 @@
 .transcript-line.patient {
   border-left: 4px solid var(--secondary-color);
   background: linear-gradient(135deg, rgba(16, 185, 129, 0.05) 0%, rgba(16, 185, 129, 0.02) 100%);
+}
+
+.transcript-line.translation {
+  border-left: 4px solid #f59e0b;
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.05) 0%, rgba(245, 158, 11, 0.02) 100%);
+  box-shadow: 0 2px 4px rgba(245, 158, 11, 0.1);
+}
+
+.transcript-line.original {
+  border-left: 4px solid #6b7280;
+  background: linear-gradient(135deg, rgba(107, 114, 128, 0.05) 0%, rgba(107, 114, 128, 0.02) 100%);
 }
 
 .transcript-header {
@@ -90,6 +126,27 @@
   text-transform: uppercase;
 }
 
+.translation-indicator {
+  background: #f59e0b;
+  color: white;
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.25rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.translation-direction {
+  background: rgba(245, 158, 11, 0.1);
+  color: #f59e0b;
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.25rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  margin-bottom: 0.5rem;
+  text-align: center;
+  border: 1px solid rgba(245, 158, 11, 0.2);
+}
+
 .timestamp {
   color: var(--text-secondary);
   font-size: 0.75rem;
@@ -108,12 +165,32 @@
   color: var(--text-primary);
 }
 
+.translation-text {
+  font-size: 0.875rem;
+  line-height: 1.4;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
 .translation {
   font-size: 0.875rem;
   line-height: 1.4;
   padding: 0.5rem;
   border-radius: 0.25rem;
   border-left: 3px solid;
+}
+
+.structured-translation {
+  font-size: 0.875rem;
+  line-height: 1.4;
+  padding: 0.5rem;
+  border-radius: 0.25rem;
+  border-left: 3px solid;
+  background: rgba(34, 197, 94, 0.1);
+  border-left-color: #22c55e;
+  color: var(--text-primary);
+  font-family: 'Courier New', monospace;
+  font-size: 0.8rem;
 }
 
 .translation.en {
@@ -128,7 +205,9 @@
   color: var(--text-primary);
 }
 
-.translation strong {
+.translation strong,
+.translation-text strong,
+.structured-translation strong {
   color: var(--text-secondary);
   font-size: 0.75rem;
   text-transform: uppercase;
@@ -156,7 +235,13 @@
     font-size: 0.8rem;
   }
   
-  .language-badge {
+  .language-badge,
+  .translation-indicator {
+    font-size: 0.7rem;
+    padding: 0.2rem 0.4rem;
+  }
+  
+  .translation-direction {
     font-size: 0.7rem;
     padding: 0.2rem 0.4rem;
   }
@@ -171,7 +256,18 @@
   }
   
   .original-text,
-  .translation {
+  .translation,
+  .translation-text,
+  .structured-translation {
+    font-size: 0.8rem;
+  }
+  
+  .system-info {
+    padding: 0.75rem;
+    margin-top: 1rem;
+  }
+  
+  .system-info li {
     font-size: 0.8rem;
   }
 }

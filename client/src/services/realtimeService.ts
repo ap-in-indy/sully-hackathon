@@ -366,39 +366,51 @@ class RealtimeService {
       return;
     }
 
-    // Use session.update instead of message for system instructions
-    // This ensures the model receives the translator role at the session level
+    // Use session.update with modalities to separate text and audio outputs
     const sessionConfig = {
       type: "session.update",
       session: {
+        modalities: ["text", "audio"],
         instructions: `You are a medical interpreter facilitating communication between an English-speaking clinician and a Spanish-speaking patient.
 
-CRITICAL INSTRUCTIONS:
-1. You must ALWAYS respond in the appropriate language based on who is speaking
-2. When the patient speaks Spanish, translate to English for the clinician
-3. When the clinician speaks English, translate to Spanish for the patient
-4. Maintain medical terminology accuracy in both languages
-5. Be concise and clear in your translations
-6. Do NOT add commentary or explanations unless specifically asked
-7. Focus on accurate medical interpretation only
+CRITICAL MODALITY SEPARATION INSTRUCTIONS:
+You MUST provide TWO COMPLETELY SEPARATE outputs:
 
-CONVERSATION FLOW:
-- Patient speaks Spanish → You translate to English for clinician
-- Clinician speaks English → You translate to Spanish for patient
-- Keep responses brief and medical-focused
+1. TEXT MODALITY (silent JSON metadata):
+   - Output ONLY valid JSON with this exact structure
+   - This JSON is NEVER spoken aloud
+   - Structure: {"language": "en|es", "translation": "text", "original_speaker": "clinician|patient", "target_speaker": "clinician|patient"}
+
+2. AUDIO MODALITY (spoken translation only):
+   - Speak ONLY the translated sentence naturally
+   - NEVER speak JSON, brackets, quotes, or metadata
+   - NEVER speak the word "language", "translation", "original_speaker", "target_speaker"
+   - NEVER speak curly braces, quotes, or any JSON syntax
+   - Speak as a human interpreter would speak
+
+IMPORTANT RULES:
+- The text modality (JSON) and audio modality (speech) are completely separate
+- The JSON is for the system to parse, the audio is for humans to hear
+- If you speak JSON in the audio, you are doing it wrong
+- The audio should contain ONLY the natural translation
+
+TRANSLATION RULES:
+- Patient speaks Spanish → Translate to English for clinician
+- Clinician speaks English → Translate to Spanish for patient
+- Maintain medical terminology accuracy
+- Be concise and clear
 - Use formal medical language appropriate for healthcare settings
 
-EXAMPLE BEHAVIOR:
-Patient: "Me duele el estómago" → You: "My stomach hurts."
-Clinician: "How long have you had this pain?" → You: "¿Cuánto tiempo ha tenido este dolor?"
+EXAMPLE:
+Patient says: "Me duele el estómago"
+- TEXT (JSON): {"language": "en", "translation": "My stomach hurts.", "original_speaker": "patient", "target_speaker": "clinician"}
+- AUDIO (spoken): "My stomach hurts." (spoken naturally in English)
 
-Remember: You are ONLY an interpreter. Do not diagnose, give medical advice, or add commentary. Just translate accurately between English and Spanish.
+Clinician says: "How long have you had this pain?"
+- TEXT (JSON): {"language": "es", "translation": "¿Cuánto tiempo ha tenido este dolor?", "original_speaker": "clinician", "target_speaker": "patient"}
+- AUDIO (spoken): "¿Cuánto tiempo ha tenido este dolor?" (spoken naturally in Spanish)
 
-When replying, YOU MUST start each response with a language tag in brackets:
-[EN] for English, [ES] for Spanish.
-Example:
-- Input (Patient): "¿Cómo está?"
-- Output: "[EN] 'How are you?'"`,
+REMEMBER: You are ONLY an interpreter. Do not diagnose, give medical advice, or add commentary. Just translate accurately between English and Spanish.`,
         input_audio_transcription: { model: "whisper-1" },
         temperature: 0.6,  // Lower temperature for more deterministic translations
         turn_detection: { type: 'server_vad' },
@@ -407,7 +419,7 @@ Example:
 
     try {
       this.dataChannel.send(JSON.stringify(sessionConfig));
-      console.log('Session configuration sent successfully via session.update');
+      console.log('Session configuration sent successfully via session.update with separated text/audio outputs');
       
       // Verify the configuration was applied after a short delay
       setTimeout(() => {
@@ -449,6 +461,10 @@ Example:
           
         case 'response.content_part.added':
           this.handleContentPartAdded(data);
+          break;
+          
+        case 'response.content_part.done':
+          this.handleContentPartDone(data);
           break;
           
         case 'response.audio_transcript.delta':
@@ -586,12 +602,70 @@ Example:
   private handleContentPartAdded(data: any): void {
     console.log('Content part added:', data);
     
-    // Check if this is a text response that should be translated
+    // Check if this is a text response that contains JSON metadata
     if (data.item?.content?.[0]?.type === 'text') {
       const text = data.item.content[0].text;
       if (text) {
-        // This is the AI's text response - we can translate it if needed
-        this.handleAIResponse(text);
+        // Try to parse JSON from the text channel
+        try {
+          const jsonData = JSON.parse(text);
+          console.log('Parsed JSON metadata from text channel:', jsonData);
+          
+          // Validate the JSON structure
+          if (jsonData.language && jsonData.translation && jsonData.original_speaker && jsonData.target_speaker) {
+            // Store the JSON metadata for use with audio transcript
+            this.handleJSONMetadata(jsonData);
+          } else {
+            console.warn('Invalid JSON structure received:', jsonData);
+          }
+        } catch (error) {
+          console.warn('Failed to parse JSON from text channel:', error);
+          console.log('Raw text content:', text);
+          // Fallback to old behavior if JSON parsing fails
+          this.handleAIResponse(text);
+        }
+      }
+    }
+  }
+
+  private handleContentPartDone(data: any): void {
+    console.log('Content part done:', data);
+    
+    // Check if this is an audio content part that contains JSON (which shouldn't happen but we need to handle it)
+    if (data.part?.type === 'audio' && data.part?.transcript) {
+      const transcript = data.part.transcript;
+      console.log('🎤 Audio content part transcript:', transcript);
+      
+      // Check if the transcript contains JSON
+      if (transcript.trim().startsWith('{') && transcript.trim().endsWith('}')) {
+        console.warn('⚠️ AI is speaking JSON in audio modality! Attempting to parse...');
+        try {
+          const jsonData = JSON.parse(transcript);
+          if (jsonData.language && jsonData.translation && jsonData.original_speaker && jsonData.target_speaker) {
+            console.log('✅ Successfully parsed JSON from audio content part:', jsonData);
+            // Use the translation field as the spoken content
+            this.handleAIResponseWithMetadata(jsonData.translation, jsonData);
+            return;
+          }
+        } catch (error) {
+          console.error('❌ Failed to parse JSON from audio content part:', error);
+        }
+      }
+    }
+    
+    // Also check text content parts for JSON metadata
+    if (data.item?.content?.[0]?.type === 'text') {
+      const text = data.item.content[0].text;
+      if (text && text.trim().startsWith('{') && text.trim().endsWith('}')) {
+        try {
+          const jsonData = JSON.parse(text);
+          if (jsonData.language && jsonData.translation && jsonData.original_speaker && jsonData.target_speaker) {
+            console.log('✅ JSON metadata received via text content part:', jsonData);
+            this.handleJSONMetadata(jsonData);
+          }
+        } catch (error) {
+          console.error('❌ Failed to parse JSON from text content part:', error);
+        }
       }
     }
   }
@@ -600,6 +674,7 @@ Example:
     console.log('Audio transcript delta:', data);
     
     // This is the AI speaking - we can show real-time transcription
+    // This is the spoken audio, not JSON, so we can display it directly
     if (data.delta?.text) {
       this.handleAIRealTimeTranscript(data.delta.text);
     }
@@ -610,8 +685,96 @@ Example:
     
     // AI finished speaking - final transcript
     if (data.transcript) {
-      this.handleAIResponse(data.transcript);
+      const audioTranscript = data.transcript;
+      console.log('🎤 Audio transcript received:', audioTranscript);
+      
+      // Check if the audio transcript contains JSON (this shouldn't happen but we need to handle it)
+      if (audioTranscript.trim().startsWith('{') && audioTranscript.trim().endsWith('}')) {
+        console.warn('⚠️ AI is speaking JSON instead of natural speech! Attempting to parse...');
+        try {
+          const jsonData = JSON.parse(audioTranscript);
+          if (jsonData.language && jsonData.translation && jsonData.original_speaker && jsonData.target_speaker) {
+            console.log('✅ Successfully parsed JSON from audio transcript:', jsonData);
+            // Use the translation field as the spoken content
+            this.handleAIResponseWithMetadata(jsonData.translation, jsonData);
+            return;
+          }
+        } catch (error) {
+          console.error('❌ Failed to parse JSON from audio transcript:', error);
+        }
+      }
+      
+      // Normal flow: use stored JSON metadata if available
+      if (this.currentJSONMetadata) {
+        console.log('✅ Using stored JSON metadata with audio transcript');
+        this.handleAIResponseWithMetadata(audioTranscript, this.currentJSONMetadata);
+        this.currentJSONMetadata = null; // Clear after use
+      } else {
+        console.warn('⚠️ No JSON metadata available, falling back to old behavior');
+        this.handleAIResponse(audioTranscript);
+      }
     }
+  }
+
+  // Store for JSON metadata received from text channel
+  private currentJSONMetadata: any = null;
+  private jsonMetadataTimeout: NodeJS.Timeout | null = null;
+
+  private handleJSONMetadata(jsonData: any): void {
+    console.log('Storing JSON metadata for audio transcript:', jsonData);
+    
+    // Validate the JSON structure
+    if (!jsonData.language || !jsonData.translation || !jsonData.original_speaker || !jsonData.target_speaker) {
+      console.warn('Invalid JSON metadata structure:', jsonData);
+      return;
+    }
+    
+    // Clear any existing timeout
+    if (this.jsonMetadataTimeout) {
+      clearTimeout(this.jsonMetadataTimeout);
+    }
+    
+    this.currentJSONMetadata = jsonData;
+    console.log('✅ JSON metadata stored successfully:', {
+      language: jsonData.language,
+      original_speaker: jsonData.original_speaker,
+      target_speaker: jsonData.target_speaker,
+      translation: jsonData.translation
+    });
+    
+    // Set a timeout to clear metadata if audio transcript doesn't arrive
+    this.jsonMetadataTimeout = setTimeout(() => {
+      console.warn('⏰ JSON metadata timeout - clearing stored metadata');
+      this.currentJSONMetadata = null;
+      this.jsonMetadataTimeout = null;
+    }, 10000); // 10 second timeout
+  }
+
+  private handleAIResponseWithMetadata(audioTranscript: string, metadata: any): void {
+    console.log('AI response with metadata:', { audioTranscript, metadata });
+    
+    // Clear the timeout since we successfully used the metadata
+    if (this.jsonMetadataTimeout) {
+      clearTimeout(this.jsonMetadataTimeout);
+      this.jsonMetadataTimeout = null;
+    }
+    
+    // Use the metadata to determine speaker and language
+    const speakerTarget = metadata.original_speaker;
+    const isSpanish = metadata.language === 'es';
+    
+    console.log(`🎯 Processing AI translation: ${speakerTarget} → ${isSpanish ? 'Spanish' : 'English'}`);
+    console.log(`📝 Audio transcript: "${audioTranscript}"`);
+    console.log(`🔤 JSON translation: "${metadata.translation}"`);
+    
+    this.handleTranscript({
+      speaker: speakerTarget,
+      lang: isSpanish ? 'es' : 'en',
+      original_text: audioTranscript, // Use the spoken audio transcript for display
+      english_text: isSpanish ? metadata.translation : audioTranscript,
+      spanish_text: isSpanish ? audioTranscript : metadata.translation,
+      isTranslation: true // This is an AI translation
+    });
   }
 
   private handleAudioDone(data: any): void {
@@ -705,8 +868,10 @@ Example:
   }
 
   private handleAIRealTimeTranscript(text: string): void {
-    console.log('AI real-time transcript:', text);
-    // Could be used to show real-time AI speech
+    console.log('AI real-time transcript (spoken):', text);
+    // This is the AI speaking the translation in real-time
+    // Could be used to show real-time AI speech or live captions
+    // The text here is the natural spoken translation, not JSON
   }
 
   private detectIntentsFromText(text: string): void {
@@ -811,6 +976,15 @@ Example:
     try {
       console.log('Disconnecting real-time service...');
       
+      // Clear any pending timeouts
+      if (this.jsonMetadataTimeout) {
+        clearTimeout(this.jsonMetadataTimeout);
+        this.jsonMetadataTimeout = null;
+      }
+      
+      // Clear stored metadata
+      this.currentJSONMetadata = null;
+      
       // Stop all media tracks
       if (this.mediaStream) {
         this.mediaStream.getTracks().forEach(track => {
@@ -873,14 +1047,95 @@ Example:
     const verificationMessage = {
       type: 'message',
       role: 'user',
-      content: 'Test message to verify translator role is active. Please confirm you are acting as a medical interpreter.'
+      content: 'Test: Please translate "Me duele la cabeza" to English. Put JSON metadata in text modality, speak only the translation in audio modality.'
     };
 
     try {
       this.dataChannel.send(JSON.stringify(verificationMessage));
-      console.log('Verification message sent to test translator role');
+      console.log('Verification message sent to test JSON metadata system');
     } catch (error) {
       console.error('Error sending verification message:', error);
+    }
+  }
+
+  // Method to test the JSON metadata system
+  async testJSONMetadataSystem(): Promise<void> {
+    if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
+      console.warn('Cannot test JSON metadata system - data channel not ready');
+      return;
+    }
+
+    console.log('🧪 Testing JSON metadata system...');
+
+    // Test Spanish to English translation
+    const spanishTestMessage = {
+      type: 'message',
+      role: 'user',
+      content: 'Please translate "Me duele la cabeza y tengo fiebre" to English. Remember: put JSON in text modality, speak only the translation in audio modality.'
+    };
+
+    try {
+      this.dataChannel.send(JSON.stringify(spanishTestMessage));
+      console.log('✅ Spanish test message sent - expecting JSON metadata in text channel and spoken translation in audio');
+      
+      // Wait a bit then test English to Spanish
+      setTimeout(() => {
+        if (this.dataChannel && this.dataChannel.readyState === 'open') {
+          const englishTestMessage = {
+            type: 'message',
+            role: 'user',
+            content: 'Please translate "How long have you had these symptoms?" to Spanish. Remember: put JSON in text modality, speak only the translation in audio modality.'
+          };
+          
+          this.dataChannel.send(JSON.stringify(englishTestMessage));
+          console.log('✅ English test message sent - expecting JSON metadata in text channel and spoken translation in audio');
+        }
+      }, 3000);
+      
+    } catch (error) {
+      console.error('Error testing JSON metadata system:', error);
+    }
+  }
+
+  // Method to send a manual test message for debugging
+  async sendManualTestMessage(message: string): Promise<void> {
+    if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
+      console.warn('Cannot send manual test message - data channel not ready');
+      return;
+    }
+
+    const testMessage = {
+      type: 'message',
+      role: 'user',
+      content: message
+    };
+
+    try {
+      this.dataChannel.send(JSON.stringify(testMessage));
+      console.log('✅ Manual test message sent:', message);
+    } catch (error) {
+      console.error('Error sending manual test message:', error);
+    }
+  }
+
+  // Method to send a system message reinforcing modality separation
+  async sendModalityReminder(): Promise<void> {
+    if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
+      console.warn('Cannot send modality reminder - data channel not ready');
+      return;
+    }
+
+    const reminderMessage = {
+      type: 'message',
+      role: 'system',
+      content: 'REMINDER: You must separate text and audio modalities. Text modality should contain JSON metadata. Audio modality should contain only natural speech. Never speak JSON in the audio modality.'
+    };
+
+    try {
+      this.dataChannel.send(JSON.stringify(reminderMessage));
+      console.log('✅ Modality separation reminder sent');
+    } catch (error) {
+      console.error('Error sending modality reminder:', error);
     }
   }
 
@@ -925,7 +1180,7 @@ Example:
       return;
     }
 
-    console.log('🧪 Testing translator functionality...');
+    console.log('🧪 Testing translator functionality with JSON metadata system...');
 
     // Test Spanish to English translation
     const spanishTestMessage = {
@@ -936,7 +1191,7 @@ Example:
 
     try {
       this.dataChannel.send(JSON.stringify(spanishTestMessage));
-      console.log('✅ Spanish test message sent');
+      console.log('✅ Spanish test message sent - expecting JSON metadata in text channel and spoken translation in audio');
       
       // Wait a bit then test English to Spanish
       setTimeout(() => {
@@ -948,7 +1203,7 @@ Example:
           };
           
           this.dataChannel.send(JSON.stringify(englishTestMessage));
-          console.log('✅ English test message sent');
+          console.log('✅ English test message sent - expecting JSON metadata in text channel and spoken translation in audio');
         }
       }, 2000);
       

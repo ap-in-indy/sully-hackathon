@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 import { RootState } from '../store';
 import { showToolModal, addNotification } from '../store/slices/uiSlice';
@@ -9,6 +9,7 @@ const ActionsPanel: React.FC = () => {
   const dispatch = useDispatch();
   const intents = useSelector((state: RootState) => state.session.intents);
   const isConnected = useSelector((state: RootState) => state.session.isConnected);
+  const [testMessage, setTestMessage] = useState('');
 
   const handleRepeatLast = async () => {
     try {
@@ -21,6 +22,60 @@ const ActionsPanel: React.FC = () => {
       dispatch(addNotification({
         type: 'error',
         message: 'Failed to repeat last utterance'
+      }));
+    }
+  };
+
+  const handleTestJSONMetadata = async () => {
+    try {
+      await realtimeService.testJSONMetadataSystem();
+      dispatch(addNotification({
+        type: 'success',
+        message: 'Testing JSON metadata system...'
+      }));
+    } catch (error) {
+      dispatch(addNotification({
+        type: 'error',
+        message: 'Failed to test JSON metadata system'
+      }));
+    }
+  };
+
+  const handleSendManualTest = async () => {
+    if (!testMessage.trim()) {
+      dispatch(addNotification({
+        type: 'warning',
+        message: 'Please enter a test message'
+      }));
+      return;
+    }
+
+    try {
+      await realtimeService.sendManualTestMessage(testMessage);
+      dispatch(addNotification({
+        type: 'success',
+        message: 'Manual test message sent'
+      }));
+      setTestMessage('');
+    } catch (error) {
+      dispatch(addNotification({
+        type: 'error',
+        message: 'Failed to send manual test message'
+      }));
+    }
+  };
+
+  const handleSendModalityReminder = async () => {
+    try {
+      await realtimeService.sendModalityReminder();
+      dispatch(addNotification({
+        type: 'success',
+        message: 'Modality separation reminder sent'
+      }));
+    } catch (error) {
+      dispatch(addNotification({
+        type: 'error',
+        message: 'Failed to send modality reminder'
       }));
     }
   };
@@ -82,13 +137,54 @@ const ActionsPanel: React.FC = () => {
     <div className="actions-panel-container">
       <div className="actions-header">
         <h4>Detected Actions</h4>
-        <button 
-          className="btn btn-outline btn-sm"
-          onClick={handleRepeatLast}
-          disabled={!isConnected}
-        >
-          🔄 Repeat Last
-        </button>
+        <div className="action-buttons">
+          <button 
+            className="btn btn-outline btn-sm"
+            onClick={handleRepeatLast}
+            disabled={!isConnected}
+          >
+            🔄 Repeat Last
+          </button>
+          <button 
+            className="btn btn-outline btn-sm"
+            onClick={handleTestJSONMetadata}
+            disabled={!isConnected}
+          >
+            🧪 Test JSON System
+          </button>
+          <button 
+            className="btn btn-outline btn-sm"
+            onClick={handleSendModalityReminder}
+            disabled={!isConnected}
+          >
+            🔧 Fix Modalities
+          </button>
+        </div>
+      </div>
+
+      <div className="manual-test-section">
+        <h5>Manual Test</h5>
+        <div className="test-input-group">
+          <input
+            type="text"
+            value={testMessage}
+            onChange={(e) => setTestMessage(e.target.value)}
+            placeholder="Enter test message..."
+            className="test-input"
+            disabled={!isConnected}
+          />
+          <button
+            className="btn btn-primary btn-sm"
+            onClick={handleSendManualTest}
+            disabled={!isConnected || !testMessage.trim()}
+          >
+            Send
+          </button>
+        </div>
+        <p className="test-help">
+          Use this to test the JSON metadata system. Try messages like:
+          "Translate 'Me duele la cabeza' to English"
+        </p>
       </div>
 
       <div className="intents-list">
