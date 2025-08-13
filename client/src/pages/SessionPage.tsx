@@ -42,8 +42,13 @@ const SessionPage: React.FC = () => {
 
       dispatch(startSession(mockSession));
 
-      // Initialize real-time voice communication
-      await realtimeService.initialize(mockSession);
+      // Initialize real-time voice communication with timeout
+      const initPromise = realtimeService.initialize(mockSession);
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Initialization timeout - please check your OpenAI API key and try again')), 30000)
+      );
+
+      await Promise.race([initPromise, timeoutPromise]);
 
       dispatch(addNotification({
         type: 'success',
@@ -54,7 +59,7 @@ const SessionPage: React.FC = () => {
       console.error('Error initializing session:', error);
       dispatch(addNotification({
         type: 'error',
-        message: 'Failed to initialize session. Please try again.'
+        message: error instanceof Error ? error.message : 'Failed to initialize session. Please try again.'
       }));
       navigate('/patients');
     } finally {
@@ -159,6 +164,40 @@ const SessionPage: React.FC = () => {
       <div className="actions-panel">
         <h3>🔧 Actions & Tools</h3>
         <ActionsPanel />
+        
+        {/* Connection Status Debug Panel */}
+        <div className="connection-debug-panel">
+          <h4>🔍 Connection Status</h4>
+          <div className="connection-info">
+            <p><strong>Connected:</strong> {session.isConnected ? '✅ Yes' : '❌ No'}</p>
+            <p><strong>Audio Level:</strong> {Math.round(audio.audioLevel)}%</p>
+            <p><strong>Active Speaker:</strong> {audio.activeSpeaker || 'None'}</p>
+          </div>
+          
+          <div className="connection-actions">
+            <button 
+              className="btn btn-outline btn-sm"
+              onClick={() => {
+                const status = realtimeService.getConnectionStatus();
+                console.log('Connection Status:', status);
+                dispatch(addNotification({
+                  type: 'info',
+                  message: `Connection: ${status.dataChannelState}, Peer: ${status.peerConnectionState}, ICE: ${status.iceConnectionState}`
+                }));
+              }}
+            >
+              📊 Log Status
+            </button>
+            
+            <button 
+              className="btn btn-outline btn-sm"
+              onClick={() => realtimeService.testConnection()}
+              disabled={!session.isConnected}
+            >
+              🧪 Test Connection
+            </button>
+          </div>
+        </div>
       </div>
 
       {audio.error && (

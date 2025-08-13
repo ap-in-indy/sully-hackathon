@@ -119,6 +119,39 @@
   font-weight: 600;
 }
 
+.connection-debug-panel {
+  margin-top: 1.5rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--border-color);
+}
+
+.connection-debug-panel h4 {
+  margin: 0 0 1rem 0;
+  color: var(--text-primary);
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.connection-info {
+  margin-bottom: 1rem;
+}
+
+.connection-info p {
+  margin: 0.25rem 0;
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+.connection-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.connection-actions .btn {
+  width: 100%;
+}
+
 .error-banner {
   position: fixed;
   bottom: 1rem;

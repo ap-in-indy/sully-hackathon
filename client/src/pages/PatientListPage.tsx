@@ -18,15 +18,15 @@ const PatientListPage: React.FC = () => {
   const [sortBy, setSortBy] = useState<'name' | 'appointment' | 'lastVisit'>('appointment');
   const [filterPriority, setFilterPriority] = useState<'all' | 'high' | 'medium' | 'low'>('all');
 
-  // Mock patient data for demo with more realistic data
-  const mockPatients: Patient[] = [
+  // Mock patient data for demo with more realistic data - wrapped in useMemo to prevent re-creation
+  const mockPatients = useMemo((): Patient[] => [
     { id: 'patient-1', name: 'Maria Rodriguez', age: 45, lastVisit: '2024-01-15', appointmentDate: '2024-01-20', priority: 'high' },
     { id: 'patient-2', name: 'Carlos Mendez', age: 32, lastVisit: '2024-01-10', appointmentDate: '2024-01-19', priority: 'medium' },
     { id: 'patient-3', name: 'Ana Garcia', age: 28, lastVisit: '2024-01-08', appointmentDate: '2024-01-18', priority: 'low' },
     { id: 'patient-4', name: 'Jose Lopez', age: 55, lastVisit: '2024-01-05', appointmentDate: '2024-01-17', priority: 'high' },
     { id: 'patient-5', name: 'Isabella Torres', age: 38, lastVisit: '2024-01-12', appointmentDate: '2024-01-21', priority: 'medium' },
     { id: 'patient-6', name: 'Miguel Santos', age: 42, lastVisit: '2024-01-03', appointmentDate: '2024-01-16', priority: 'low' },
-  ];
+  ], []);
 
   const filteredAndSortedPatients = useMemo(() => {
     let filtered = mockPatients.filter(patient => {

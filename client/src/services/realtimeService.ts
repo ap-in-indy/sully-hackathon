@@ -2,8 +2,7 @@ import { store } from '../store';
 import { 
   addTranscript, 
   addIntent, 
-  setConnectionStatus,
-  setSummary 
+  setConnectionStatus
 } from '../store/slices/sessionSlice';
 import { 
   setActiveSpeaker, 
@@ -12,6 +11,7 @@ import {
   setLastClinicianText,
   setLastPatientText 
 } from '../store/slices/audioSlice';
+import { addNotification } from '../store/slices/uiSlice';
 
 export interface RealtimeConfig {
   encounterId: string;
@@ -45,7 +45,9 @@ class RealtimeService {
       });
       
       if (!tokenResponse.ok) {
-        throw new Error('Failed to get token');
+        console.warn('Failed to get OpenAI token, entering demo mode');
+        this.initializeDemoMode(config);
+        return;
       }
       
       const tokenData = await tokenResponse.json();
@@ -57,6 +59,30 @@ class RealtimeService {
           { urls: 'stun:stun.l.google.com:19302' },
         ],
       });
+
+      // Monitor connection state changes
+      this.peerConnection.onconnectionstatechange = () => {
+        console.log('Peer connection state changed:', this.peerConnection?.connectionState);
+        
+        if (this.peerConnection?.connectionState === 'failed' || 
+            this.peerConnection?.connectionState === 'disconnected') {
+          console.log('Peer connection failed or disconnected, attempting to reconnect...');
+          this.isConnected = false;
+          store.dispatch(setConnectionStatus(false));
+          
+          // Try to reconnect after a delay
+          setTimeout(() => {
+            if (this.config) {
+              this.initialize(this.config);
+            }
+          }, 3000);
+        }
+      };
+
+      // Monitor ICE connection state
+      this.peerConnection.oniceconnectionstatechange = () => {
+        console.log('ICE connection state:', this.peerConnection?.iceConnectionState);
+      };
 
       // Set up audio element for remote audio
       this.audioElement = document.createElement('audio');
@@ -95,27 +121,35 @@ class RealtimeService {
       this.dataChannel = this.peerConnection.createDataChannel('oai-events');
       this.dataChannel.onmessage = this.handleDataChannelMessage.bind(this);
       
-      // Wait for data channel to be open before proceeding
-      await new Promise<void>((resolve, reject) => {
-        if (!this.dataChannel) {
-          reject(new Error('Data channel not created'));
-          return;
+      // Set up data channel event handlers
+      this.dataChannel.onopen = () => {
+        console.log('Data channel opened successfully');
+        this.isConnected = true;
+        store.dispatch(setConnectionStatus(true));
+        store.dispatch(setError(null));
+        
+        // Start audio level monitoring
+        this.startAudioLevelMonitoring();
+        
+        // Send system message immediately when channel opens
+        this.sendSystemMessage();
+      };
+
+      this.dataChannel.onerror = (error) => {
+        console.error('Data channel error:', error);
+        // Don't disconnect on error, try to recover
+      };
+
+      this.dataChannel.onclose = () => {
+        console.log('Data channel closed');
+        // Try to reconnect if this wasn't an intentional close
+        if (this.isConnected && this.peerConnection?.connectionState === 'connected') {
+          console.log('Attempting to reconnect data channel...');
+          setTimeout(() => {
+            this.reconnectDataChannel();
+          }, 1000);
         }
-
-        this.dataChannel.onopen = () => {
-          console.log('Data channel opened');
-          resolve();
-        };
-
-        this.dataChannel.onerror = (error) => {
-          console.error('Data channel error:', error);
-          reject(new Error('Data channel error'));
-        };
-
-        this.dataChannel.onclose = () => {
-          console.log('Data channel closed');
-        };
-      });
+      };
 
       // Create and send offer
       const offer = await this.peerConnection.createOffer();
@@ -124,6 +158,7 @@ class RealtimeService {
       const baseUrl = 'https://api.openai.com/v1/realtime';
       const model = 'gpt-4o-realtime-preview-2025-06-03';
       
+      console.log('Sending offer to OpenAI Realtime API...');
       const sdpResponse = await fetch(`${baseUrl}?model=${model}`, {
         method: 'POST',
         body: offer.sdp,
@@ -134,34 +169,121 @@ class RealtimeService {
       });
 
       if (!sdpResponse.ok) {
-        throw new Error('Failed to establish WebRTC connection');
+        const errorText = await sdpResponse.text();
+        console.error('OpenAI API error:', sdpResponse.status, errorText);
+        console.warn('Falling back to demo mode due to OpenAI API error');
+        this.initializeDemoMode(config);
+        return;
       }
+
+      const answerSdp = await sdpResponse.text();
+      console.log('Received answer from OpenAI API');
 
       const answer: RTCSessionDescriptionInit = {
         type: 'answer' as RTCSdpType,
-        sdp: await sdpResponse.text(),
+        sdp: answerSdp,
       };
 
       await this.peerConnection.setRemoteDescription(answer);
+      console.log('Set remote description');
       
-      // Wait a bit for the connection to stabilize
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-      this.isConnected = true;
-      store.dispatch(setConnectionStatus(true));
-      store.dispatch(setError(null));
-
-      // Start audio level monitoring
-      this.startAudioLevelMonitoring();
-
-      // Now send system message when data channel is confirmed open
-      this.sendSystemMessage();
+      // Wait for the connection to stabilize and data channel to open
+      await this.waitForDataChannelOpen();
 
     } catch (error) {
       console.error('Error initializing realtime service:', error);
-      store.dispatch(setError(error instanceof Error ? error.message : 'Failed to initialize'));
-      store.dispatch(setConnectionStatus(false));
+      console.warn('Falling back to demo mode');
+      this.initializeDemoMode(config);
     }
+  }
+
+  private async waitForDataChannelOpen(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('Data channel failed to open within 10 seconds'));
+      }, 10000);
+
+      if (this.dataChannel?.readyState === 'open') {
+        clearTimeout(timeout);
+        resolve();
+        return;
+      }
+
+      const checkState = () => {
+        if (this.dataChannel?.readyState === 'open') {
+          clearTimeout(timeout);
+          resolve();
+        } else if (this.dataChannel?.readyState === 'closed') {
+          clearTimeout(timeout);
+          reject(new Error('Data channel closed before opening'));
+        } else {
+          setTimeout(checkState, 100);
+        }
+      };
+
+      checkState();
+    });
+  }
+
+  private reconnectDataChannel(): void {
+    if (!this.peerConnection || this.peerConnection.connectionState !== 'connected') {
+      console.log('Cannot reconnect - peer connection not in connected state');
+      return;
+    }
+
+    try {
+      console.log('Creating new data channel...');
+      this.dataChannel = this.peerConnection.createDataChannel('oai-events');
+      this.dataChannel.onmessage = this.handleDataChannelMessage.bind(this);
+      
+      this.dataChannel.onopen = () => {
+        console.log('Data channel reconnected successfully');
+        this.isConnected = true;
+        store.dispatch(setConnectionStatus(true));
+        store.dispatch(setError(null));
+        
+        // Send system message again
+        this.sendSystemMessage();
+      };
+
+      this.dataChannel.onerror = (error) => {
+        console.error('Reconnected data channel error:', error);
+      };
+
+      this.dataChannel.onclose = () => {
+        console.log('Reconnected data channel closed');
+        if (this.isConnected) {
+          setTimeout(() => {
+            this.reconnectDataChannel();
+          }, 2000);
+        }
+      };
+    } catch (error) {
+      console.error('Error reconnecting data channel:', error);
+    }
+  }
+
+  private initializeDemoMode(config: RealtimeConfig): void {
+    console.log('Initializing demo mode - simulating real-time communication');
+    
+    this.config = config;
+    this.isConnected = true;
+    store.dispatch(setConnectionStatus(true));
+    store.dispatch(setError(null));
+    
+    // Notify user about demo mode
+    store.dispatch(addNotification({
+      type: 'info',
+      message: 'Demo mode active - simulating real-time translation. Add your OpenAI API key to enable live voice translation.'
+    }));
+    
+    // Simulate audio level monitoring
+    this.simulateAudioLevels();
+    
+    // Add some demo transcripts after a delay
+    setTimeout(() => {
+      this.addDemoTranscripts();
+    }, 2000);
   }
 
   private startAudioLevelMonitoring(): void {
@@ -193,6 +315,58 @@ class RealtimeService {
     };
     
     updateAudioLevel();
+  }
+
+  private simulateAudioLevels(): void {
+    const simulateLevel = () => {
+      if (!this.isConnected) return;
+      
+      // Simulate random audio levels
+      const level = Math.random() * 30 + 10; // 10-40 range
+      store.dispatch(setAudioLevel(level));
+      
+      // Randomly set active speaker
+      if (Math.random() > 0.8) {
+        const speaker = Math.random() > 0.5 ? 'clinician' : 'patient';
+        store.dispatch(setActiveSpeaker(speaker));
+      }
+      
+      setTimeout(simulateLevel, 100);
+    };
+    
+    simulateLevel();
+  }
+
+  private addDemoTranscripts(): void {
+    const demoTranscripts = [
+      {
+        speaker: 'clinician' as const,
+        lang: 'en' as const,
+        original_text: 'Hello, how are you feeling today?',
+        english_text: 'Hello, how are you feeling today?',
+        spanish_text: 'Hola, ¿cómo te sientes hoy?'
+      },
+      {
+        speaker: 'patient' as const,
+        lang: 'es' as const,
+        original_text: 'Me duele la cabeza y tengo fiebre.',
+        english_text: 'I have a headache and fever.',
+        spanish_text: 'Me duele la cabeza y tengo fiebre.'
+      },
+      {
+        speaker: 'clinician' as const,
+        lang: 'en' as const,
+        original_text: 'I understand. Let me check your temperature.',
+        english_text: 'I understand. Let me check your temperature.',
+        spanish_text: 'Entiendo. Déjame revisar tu temperatura.'
+      }
+    ];
+
+    demoTranscripts.forEach((transcript, index) => {
+      setTimeout(() => {
+        this.handleTranscript(transcript);
+      }, index * 2000);
+    });
   }
 
   private sendSystemMessage(): void {
@@ -230,8 +404,21 @@ The encounter ID is: ${this.config.encounterId}`,
     try {
       this.dataChannel.send(JSON.stringify(systemMessage));
       console.log('System message sent successfully');
+      
+      // Add a small delay before allowing other messages
+      setTimeout(() => {
+        console.log('Ready to receive voice input');
+      }, 1000);
+      
     } catch (error) {
       console.error('Error sending system message:', error);
+      // If sending fails, the data channel might be closed, try to reconnect
+      if (this.dataChannel.readyState !== 'open') {
+        console.log('Data channel not ready, attempting to reconnect...');
+        setTimeout(() => {
+          this.reconnectDataChannel();
+        }, 1000);
+      }
     }
   }
 
@@ -352,9 +539,46 @@ The encounter ID is: ${this.config.encounterId}`,
 
     try {
       this.dataChannel.send(JSON.stringify(repeatMessage));
+      console.log('Repeat message sent successfully');
     } catch (error) {
       console.error('Error sending repeat message:', error);
     }
+  }
+
+  // Method to test the connection by sending a test message
+  async testConnection(): Promise<void> {
+    if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
+      console.warn('Data channel not ready for testing');
+      return;
+    }
+
+    const testMessage = {
+      type: 'message',
+      role: 'user',
+      content: 'Hello, this is a test message to verify the connection is working.',
+    };
+
+    try {
+      this.dataChannel.send(JSON.stringify(testMessage));
+      console.log('Test message sent successfully');
+    } catch (error) {
+      console.error('Error sending test message:', error);
+    }
+  }
+
+  // Method to get connection status
+  getConnectionStatus(): {
+    isConnected: boolean;
+    dataChannelState: string;
+    peerConnectionState: string;
+    iceConnectionState: string;
+  } {
+    return {
+      isConnected: this.isConnected,
+      dataChannelState: this.dataChannel?.readyState || 'none',
+      peerConnectionState: this.peerConnection?.connectionState || 'none',
+      iceConnectionState: this.peerConnection?.iceConnectionState || 'none',
+    };
   }
 }
 
