@@ -2,16 +2,22 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
-const WebSocket = require('ws');
 const { PrismaClient } = require('@prisma/client');
 const OpenAI = require('openai');
 require('dotenv').config();
 
 const app = express();
-const server = require('http').createServer(app);
-const wss = new WebSocket.Server({ server });
 
-const prisma = new PrismaClient();
+// Initialize Prisma client only if DATABASE_URL is available
+let prisma = null;
+if (process.env.DATABASE_URL) {
+  try {
+    prisma = new PrismaClient();
+  } catch (error) {
+    console.error('Failed to initialize Prisma:', error);
+  }
+}
+
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
@@ -30,7 +36,12 @@ app.use(limiter);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.json({ 
+    status: 'ok', 
+    timestamp: new Date().toISOString(),
+    database: !!prisma,
+    openai: !!process.env.OPENAI_API_KEY
+  });
 });
 
 // Favicon endpoint
@@ -71,6 +82,10 @@ app.post('/api/token', async (req, res) => {
 // Create new encounter/session
 app.post('/api/encounters', async (req, res) => {
   try {
+    if (!prisma) {
+      return res.status(503).json({ error: 'Database not available' });
+    }
+    
     const { patient_id, clinician_id } = req.body;
     
     const encounter = await prisma.encounter.create({
@@ -92,6 +107,10 @@ app.post('/api/encounters', async (req, res) => {
 // Add transcript line
 app.post('/api/encounters/:id/line', async (req, res) => {
   try {
+    if (!prisma) {
+      return res.status(503).json({ error: 'Database not available' });
+    }
+    
     const { id } = req.params;
     const { speaker, lang, text, en_text, es_text } = req.body;
     
@@ -117,6 +136,10 @@ app.post('/api/encounters/:id/line', async (req, res) => {
 // End encounter and generate summary
 app.post('/api/encounters/:id/end', async (req, res) => {
   try {
+    if (!prisma) {
+      return res.status(503).json({ error: 'Database not available' });
+    }
+    
     const { id } = req.params;
     
     // Get all transcript lines for this encounter
@@ -152,69 +175,212 @@ app.post('/api/encounters/:id/end', async (req, res) => {
       data: {
         ended_at: new Date(),
         status: 'completed',
-        summary: summary
+        summary
       }
     });
     
-    res.json({ encounter, summary });
+    res.json(encounter);
   } catch (error) {
     console.error('Error ending encounter:', error);
     res.status(500).json({ error: 'Failed to end encounter' });
   }
 });
 
-// Tool endpoints for follow-up actions
-app.post('/api/tool/schedule_follow_up', async (req, res) => {
+// Get encounter details
+app.get('/api/encounters/:id', async (req, res) => {
   try {
-    const { patient_id, date_iso, notes } = req.body;
+    if (!prisma) {
+      return res.status(503).json({ error: 'Database not available' });
+    }
     
-    // Log the action
-    const action = await prisma.intent.create({
-      data: {
-        encounter_id: req.body.encounter_id,
-        actor: 'clinician',
-        name: 'schedule_follow_up',
-        args: { patient_id, date_iso, notes },
-        status: 'pending'
+    const { id } = req.params;
+    
+    const encounter = await prisma.encounter.findUnique({
+      where: { id },
+      include: {
+        patient: true,
+        clinician: true,
+        transcript_lines: {
+          orderBy: { timestamp: 'asc' }
+        },
+        intents: {
+          orderBy: { created_at: 'asc' }
+        }
       }
     });
     
-    // Forward to webhook.site for demo purposes
-    const webhookResponse = await fetch('https://webhook.site/your-unique-url', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ patient_id, date_iso, notes })
-    });
+    if (!encounter) {
+      return res.status(404).json({ error: 'Encounter not found' });
+    }
     
-    const webhookResult = await webhookResponse.json();
-    
-    // Update action status
-    await prisma.intent.update({
-      where: { id: action.id },
-      data: {
-        status: 'completed',
-        webhook_response: webhookResult
-      }
-    });
-    
-    res.json({ success: true, action_id: action.id });
+    res.json(encounter);
   } catch (error) {
-    console.error('Error scheduling follow-up:', error);
-    res.status(500).json({ error: 'Failed to schedule follow-up' });
+    console.error('Error getting encounter:', error);
+    res.status(500).json({ error: 'Failed to get encounter' });
   }
 });
 
-app.post('/api/tool/send_lab_order', async (req, res) => {
+// Get all encounters
+app.get('/api/encounters', async (req, res) => {
   try {
+    if (!prisma) {
+      return res.status(503).json({ error: 'Database not available' });
+    }
+    
+    const encounters = await prisma.encounter.findMany({
+      include: {
+        patient: true,
+        clinician: true
+      },
+      orderBy: { created_at: 'desc' }
+    });
+    
+    res.json(encounters);
+  } catch (error) {
+    console.error('Error getting encounters:', error);
+    res.status(500).json({ error: 'Failed to get encounters' });
+  }
+});
+
+// Get all patients
+app.get('/api/patients', async (req, res) => {
+  try {
+    if (!prisma) {
+      return res.status(503).json({ error: 'Database not available' });
+    }
+    
+    const patients = await prisma.patient.findMany({
+      orderBy: { created_at: 'desc' }
+    });
+    
+    res.json(patients);
+  } catch (error) {
+    console.error('Error getting patients:', error);
+    res.status(500).json({ error: 'Failed to get patients' });
+  }
+});
+
+// Create new patient
+app.post('/api/patients', async (req, res) => {
+  try {
+    if (!prisma) {
+      return res.status(503).json({ error: 'Database not available' });
+    }
+    
+    const { name } = req.body;
+    
+    const patient = await prisma.patient.create({
+      data: { name }
+    });
+    
+    res.json(patient);
+  } catch (error) {
+    console.error('Error creating patient:', error);
+    res.status(500).json({ error: 'Failed to create patient' });
+  }
+});
+
+// Get all clinicians
+app.get('/api/clinicians', async (req, res) => {
+  try {
+    if (!prisma) {
+      return res.status(503).json({ error: 'Database not available' });
+    }
+    
+    const clinicians = await prisma.clinician.findMany({
+      orderBy: { created_at: 'desc' }
+    });
+    
+    res.json(clinicians);
+  } catch (error) {
+    console.error('Error getting clinicians:', error);
+    res.status(500).json({ error: 'Failed to get clinicians' });
+  }
+});
+
+// Create new clinician
+app.post('/api/clinicians', async (req, res) => {
+  try {
+    if (!prisma) {
+      return res.status(503).json({ error: 'Database not available' });
+    }
+    
+    const { name, pin } = req.body;
+    const bcrypt = require('bcryptjs');
+    const pin_hash = await bcrypt.hash(pin, 10);
+    
+    const clinician = await prisma.clinician.create({
+      data: { name, pin_hash }
+    });
+    
+    res.json(clinician);
+  } catch (error) {
+    console.error('Error creating clinician:', error);
+    res.status(500).json({ error: 'Failed to create clinician' });
+  }
+});
+
+// Authenticate clinician
+app.post('/api/auth/clinician', async (req, res) => {
+  try {
+    if (!prisma) {
+      return res.status(503).json({ error: 'Database not available' });
+    }
+    
+    const { name, pin } = req.body;
+    const bcrypt = require('bcryptjs');
+    
+    const clinician = await prisma.clinician.findFirst({
+      where: { name }
+    });
+    
+    if (!clinician) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+    
+    const isValid = await bcrypt.compare(pin, clinician.pin_hash);
+    
+    if (!isValid) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+    
+    const jwt = require('jsonwebtoken');
+    const token = jwt.sign(
+      { clinician_id: clinician.id, name: clinician.name },
+      process.env.JWT_SECRET || 'fallback-secret',
+      { expiresIn: '24h' }
+    );
+    
+    res.json({ 
+      token, 
+      clinician: { 
+        id: clinician.id, 
+        name: clinician.name 
+      } 
+    });
+  } catch (error) {
+    console.error('Error authenticating clinician:', error);
+    res.status(500).json({ error: 'Failed to authenticate' });
+  }
+});
+
+// Send lab order webhook
+app.post('/api/encounters/:id/lab-order', async (req, res) => {
+  try {
+    if (!prisma) {
+      return res.status(503).json({ error: 'Database not available' });
+    }
+    
+    const { id } = req.params;
     const { patient_id, test_code, priority } = req.body;
     
-    // Log the action
+    // Create intent record
     const action = await prisma.intent.create({
       data: {
-        encounter_id: req.body.encounter_id,
+        encounter_id: id,
         actor: 'clinician',
         name: 'send_lab_order',
-        args: { patient_id, test_code, priority },
+        args: JSON.stringify({ patient_id, test_code, priority }),
         status: 'pending'
       }
     });
@@ -244,74 +410,5 @@ app.post('/api/tool/send_lab_order', async (req, res) => {
   }
 });
 
-// WebSocket connection handling
-wss.on('connection', (ws) => {
-  console.log('New WebSocket connection');
-  
-  ws.on('message', async (message) => {
-    try {
-      const data = JSON.parse(message);
-      
-      // Handle different message types
-      switch (data.type) {
-        case 'transcript':
-          // Store transcript line
-          await prisma.transcriptLine.create({
-            data: {
-              encounter_id: data.encounter_id,
-              speaker: data.speaker,
-              lang: data.lang,
-              text: data.text,
-              en_text: data.en_text,
-              es_text: data.es_text,
-              timestamp: new Date()
-            }
-          });
-          break;
-          
-        case 'intent':
-          // Store intent
-          await prisma.intent.create({
-            data: {
-              encounter_id: data.encounter_id,
-              actor: data.actor,
-              name: data.name,
-              args: data.args,
-              status: 'detected'
-            }
-          });
-          break;
-      }
-      
-      // Broadcast to all connected clients
-      wss.clients.forEach((client) => {
-        if (client !== ws && client.readyState === WebSocket.OPEN) {
-          client.send(JSON.stringify(data));
-        }
-      });
-      
-    } catch (error) {
-      console.error('Error handling WebSocket message:', error);
-    }
-  });
-  
-  ws.on('close', () => {
-    console.log('WebSocket connection closed');
-  });
-});
-
-const PORT = process.env.PORT || 3001;
-
-server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
-
-// Graceful shutdown
-process.on('SIGTERM', async () => {
-  console.log('SIGTERM received, shutting down gracefully');
-  await prisma.$disconnect();
-  server.close(() => {
-    console.log('Server closed');
-    process.exit(0);
-  });
-});
+// Export the Express app for Vercel
+module.exports = app;
