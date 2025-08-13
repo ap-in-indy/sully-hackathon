@@ -128,8 +128,8 @@ class RealtimeService {
       
       // Wait for data channel to be open before proceeding
       this.dataChannel.onopen = () => {
-        console.log('Data channel opened, sending system message');
-        this.sendSystemMessage();
+        console.log('Data channel opened, sending session configuration');
+        this.sendSessionConfiguration();
       };
 
       this.dataChannel.onerror = (error) => {
@@ -174,8 +174,8 @@ class RealtimeService {
       // Start audio level monitoring
       this.startAudioLevelMonitoring();
 
-      // Note: System message will be sent when data channel opens
-      // No need to call sendSystemMessage() here anymore
+      // Note: Session configuration will be sent when data channel opens
+      // No need to call sendSessionConfiguration() here anymore
 
     } catch (error) {
       console.error('Error initializing realtime service:', error);
@@ -229,8 +229,8 @@ class RealtimeService {
         store.dispatch(setConnectionStatus(true));
         store.dispatch(setError(null));
         
-        // Send system message again
-        this.sendSystemMessage();
+        // Send session configuration again
+        this.sendSessionConfiguration();
       };
 
       this.dataChannel.onerror = (error) => {
@@ -356,20 +356,22 @@ class RealtimeService {
     });
   }
 
-  private sendSystemMessage(): void {
+  private sendSessionConfiguration(): void {
     if (!this.dataChannel || !this.config) return;
     
     // Ensure data channel is open before sending
     if (this.dataChannel.readyState !== 'open') {
       console.log('Data channel not ready, retrying in 100ms...');
-      setTimeout(() => this.sendSystemMessage(), 100);
+      setTimeout(() => this.sendSessionConfiguration(), 100);
       return;
     }
 
-    const systemMessage = {
-      type: 'message',
-      role: 'system',
-      content: `You are a medical interpreter facilitating communication between an English-speaking clinician and a Spanish-speaking patient.
+    // Use session.update instead of message for system instructions
+    // This ensures the model receives the translator role at the session level
+    const sessionConfig = {
+      type: "session.update",
+      session: {
+        instructions: `You are a medical interpreter facilitating communication between an English-speaking clinician and a Spanish-speaking patient.
 
 CRITICAL INSTRUCTIONS:
 1. You must ALWAYS respond in the appropriate language based on who is speaking
@@ -390,14 +392,22 @@ EXAMPLE BEHAVIOR:
 Patient: "Me duele el estómago" → You: "The patient says their stomach hurts"
 Clinician: "How long have you had this pain?" → You: "¿Cuánto tiempo ha tenido este dolor?"
 
-Remember: You are ONLY an interpreter. Do not diagnose, give medical advice, or add commentary. Just translate accurately between English and Spanish.`
+Remember: You are ONLY an interpreter. Do not diagnose, give medical advice, or add commentary. Just translate accurately between English and Spanish.`,
+        input_audio_transcription: { model: "whisper-1" },
+        temperature: 0.6  // Lower temperature for more deterministic translations
+      }
     };
 
     try {
-      this.dataChannel.send(JSON.stringify(systemMessage));
-      console.log('System message sent successfully');
+      this.dataChannel.send(JSON.stringify(sessionConfig));
+      console.log('Session configuration sent successfully via session.update');
+      
+      // Verify the configuration was applied after a short delay
+      setTimeout(() => {
+        this.verifySessionConfiguration();
+      }, 1000);
     } catch (error) {
-      console.error('Error sending system message:', error);
+      console.error('Error sending session configuration:', error);
     }
   }
   
@@ -470,7 +480,11 @@ Remember: You are ONLY an interpreter. Do not diagnose, give medical advice, or 
           break;
           
         case 'session.updated':
-          console.log('Session updated:', data);
+          console.log('Session updated with configuration:', data);
+          // Verify that our session configuration was accepted
+          if (data.session?.instructions) {
+            console.log('✅ Session instructions confirmed:', data.session.instructions.substring(0, 100) + '...');
+          }
           break;
 
         // Handle rate limits
@@ -531,6 +545,8 @@ Remember: You are ONLY an interpreter. Do not diagnose, give medical advice, or 
     // Determine speaker and language
     const speaker = this.determineSpeaker(data);
     const lang = this.detectLanguage(transcript);
+
+    console.log(`🎤 ${speaker} spoke in ${lang === 'en' ? 'English' : 'Spanish'}: "${transcript}"`);
 
     // Create transcript entry
     this.handleTranscript({
@@ -603,20 +619,61 @@ Remember: You are ONLY an interpreter. Do not diagnose, give medical advice, or 
   }
 
   private determineSpeaker(data: any): 'clinician' | 'patient' {
-    // For now, assume patient (since clinician usually speaks English)
-    // In a real implementation, you might use speaker diarization or other methods
-    return 'patient';
+    // Extract transcript text from the data
+    const text = data.transcript || data.item?.content?.[0]?.transcript || "";
+    
+    // Detect language to determine speaker
+    // Clinician speaks English, patient speaks Spanish
+    const lang = this.detectLanguage(text);
+    return lang === 'en' ? 'clinician' : 'patient';
   }
 
   private detectLanguage(text: string): 'en' | 'es' {
-    // Simple language detection - can be improved
-    const spanishPattern = /[áéíóúñü]/i;
-    const englishPattern = /[a-zA-Z]/;
+    if (!text || text.trim().length === 0) {
+      return 'en'; // Default to English if no text
+    }
     
-    if (spanishPattern.test(text)) {
+    const cleanText = text.toLowerCase().trim();
+    
+    // Spanish-specific patterns and common words
+    const spanishPatterns = [
+      /[áéíóúñü]/i,  // Spanish accented characters
+      /\b(el|la|los|las|de|que|y|en|un|una|es|son|está|están|tiene|tienen|me|te|se|nos|le|les|mi|tu|su|nuestro|vuestro|su|este|esta|eso|esa|aquí|allí|ahora|siempre|nunca|muy|más|menos|bien|mal|bueno|buena|malo|mala)\b/,
+      /\b(hola|gracias|por favor|perdón|disculpe|sí|no|bien|mal|dolor|fiebre|cabeza|estómago|brazo|pierna|ojos|oídos|nariz|boca|corazón|pulmones|hígado|riñones)\b/
+    ];
+    
+    // English-specific patterns and common words
+    const englishPatterns = [
+      /\b(the|a|an|and|or|but|in|on|at|to|for|of|with|by|from|up|down|out|off|over|under|this|that|these|those|is|are|was|were|be|been|being|have|has|had|do|does|did|will|would|could|should|can|may|might|must)\b/,
+      /\b(hello|thank you|please|sorry|excuse me|yes|no|good|bad|pain|fever|head|stomach|arm|leg|eyes|ears|nose|mouth|heart|lungs|liver|kidneys)\b/
+    ];
+    
+    // Count Spanish and English matches
+    let spanishScore = 0;
+    let englishScore = 0;
+    
+    spanishPatterns.forEach(pattern => {
+      if (pattern.test(cleanText)) {
+        spanishScore += 1;
+      }
+    });
+    
+    englishPatterns.forEach(pattern => {
+      if (pattern.test(cleanText)) {
+        englishScore += 1;
+      }
+    });
+    
+    // If we have a clear winner, use it
+    if (spanishScore > englishScore) {
       return 'es';
-    } else if (englishPattern.test(text)) {
+    } else if (englishScore > spanishScore) {
       return 'en';
+    }
+    
+    // If scores are equal, check for Spanish accented characters as a tiebreaker
+    if (/[áéíóúñü]/i.test(cleanText)) {
+      return 'es';
     }
     
     // Default to English if unclear
@@ -626,13 +683,18 @@ Remember: You are ONLY an interpreter. Do not diagnose, give medical advice, or 
   private handleAIResponse(text: string): void {
     console.log('AI response:', text);
     
+    // Determine if this is a translation response
+    // The AI should now be acting as a translator, so responses should be in the target language
+    const isSpanishResponse = /[áéíóúñü]/i.test(text) || 
+                             /\b(el|la|los|las|de|que|y|en|un|una|es|son|está|están|tiene|tienen|me|te|se|nos|le|les|mi|tu|su|nuestro|vuestro|su|este|esta|eso|esa|aquí|allí|ahora|siempre|nunca|muy|más|menos|bien|mal|bueno|buena|malo|mala)\b/i.test(text);
+    
     // Create transcript entry for AI response
     this.handleTranscript({
       speaker: 'clinician', // AI responses are treated as clinician
-      lang: 'en', // AI responses are in English
+      lang: isSpanishResponse ? 'es' : 'en',
       original_text: text,
-      english_text: text,
-      spanish_text: undefined // Could be translated to Spanish if needed
+      english_text: isSpanishResponse ? undefined : text,
+      spanish_text: isSpanishResponse ? text : undefined
     });
   }
 
@@ -793,6 +855,28 @@ Remember: You are ONLY an interpreter. Do not diagnose, give medical advice, or 
     return this.isConnected;
   }
 
+  // Method to verify session configuration was applied
+  private verifySessionConfiguration(): void {
+    if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
+      console.warn('Cannot verify session configuration - data channel not ready');
+      return;
+    }
+
+    // Send a verification message to test if the translator role is working
+    const verificationMessage = {
+      type: 'message',
+      role: 'user',
+      content: 'Test message to verify translator role is active. Please confirm you are acting as a medical interpreter.'
+    };
+
+    try {
+      this.dataChannel.send(JSON.stringify(verificationMessage));
+      console.log('Verification message sent to test translator role');
+    } catch (error) {
+      console.error('Error sending verification message:', error);
+    }
+  }
+
   // Method to manually trigger repeat functionality
   async repeatLast(): Promise<void> {
     if (!this.dataChannel) return;
@@ -824,6 +908,45 @@ Remember: You are ONLY an interpreter. Do not diagnose, give medical advice, or 
       console.log('Test message sent successfully');
     } catch (error) {
       console.error('Error sending test message:', error);
+    }
+  }
+
+  // Method to test the translator functionality
+  async testTranslator(): Promise<void> {
+    if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
+      console.warn('Cannot test translator - data channel not ready');
+      return;
+    }
+
+    console.log('🧪 Testing translator functionality...');
+
+    // Test Spanish to English translation
+    const spanishTestMessage = {
+      type: 'message',
+      role: 'user',
+      content: 'Me duele la cabeza y tengo fiebre.'
+    };
+
+    try {
+      this.dataChannel.send(JSON.stringify(spanishTestMessage));
+      console.log('✅ Spanish test message sent');
+      
+      // Wait a bit then test English to Spanish
+      setTimeout(() => {
+        if (this.dataChannel && this.dataChannel.readyState === 'open') {
+          const englishTestMessage = {
+            type: 'message',
+            role: 'user',
+            content: 'How long have you had these symptoms?'
+          };
+          
+          this.dataChannel.send(JSON.stringify(englishTestMessage));
+          console.log('✅ English test message sent');
+        }
+      }, 2000);
+      
+    } catch (error) {
+      console.error('Error testing translator:', error);
     }
   }
 
