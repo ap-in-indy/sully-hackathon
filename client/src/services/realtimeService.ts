@@ -106,8 +106,8 @@ class RealtimeService {
         throw new Error('Failed to establish WebRTC connection');
       }
 
-      const answer = {
-        type: 'answer',
+      const answer: RTCSessionDescriptionInit = {
+        type: 'answer' as RTCSdpType,
         sdp: await sdpResponse.text(),
       };
 
