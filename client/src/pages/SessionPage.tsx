@@ -5,9 +5,11 @@ import { RootState } from '../store';
 import { startSession, endSession } from '../store/slices/sessionSlice';
 import { setLoading, addNotification } from '../store/slices/uiSlice';
 import realtimeService from '../services/realtimeService';
+import splitPipelineService from '../services/splitPipelineService';
 import TranscriptPanel from '../components/TranscriptPanel';
 import ActionsPanel from '../components/ActionsPanel';
 import AudioControls from '../components/AudioControls';
+import AudioRecorder from '../components/AudioRecorder';
 import SessionHeader from '../components/SessionHeader';
 import './SessionPage.css';
 
@@ -21,6 +23,7 @@ const SessionPage: React.FC = () => {
   const ui = useSelector((state: RootState) => state.ui);
 
   const [isInitializing, setIsInitializing] = useState(true);
+  const [useSplitPipeline, setUseSplitPipeline] = useState(false);
 
   const initializeSession = useCallback(async () => {
     try {
@@ -37,8 +40,12 @@ const SessionPage: React.FC = () => {
 
       dispatch(startSession(mockSession));
 
-      // Initialize real-time voice communication
-      await realtimeService.initialize(mockSession);
+      // Initialize the appropriate service based on user choice
+      if (useSplitPipeline) {
+        await splitPipelineService.initialize(mockSession);
+      } else {
+        await realtimeService.initialize(mockSession);
+      }
 
       dispatch(addNotification({
         type: 'success',
@@ -56,7 +63,7 @@ const SessionPage: React.FC = () => {
       dispatch(setLoading(false));
       setIsInitializing(false);
     }
-  }, [encounterId, dispatch, navigate]);
+  }, [encounterId, dispatch, navigate, useSplitPipeline]);
 
   useEffect(() => {
     if (!encounterId) {
@@ -71,8 +78,12 @@ const SessionPage: React.FC = () => {
     try {
       dispatch(setLoading(true));
 
-      // Disconnect from real-time service
-      await realtimeService.disconnect();
+      // Disconnect from the appropriate service
+      if (useSplitPipeline) {
+        await splitPipelineService.disconnect();
+      } else {
+        await realtimeService.disconnect();
+      }
 
       // End session on server
       if (session.encounterId) {
@@ -122,38 +133,77 @@ const SessionPage: React.FC = () => {
         isConnected={session.isConnected}
       />
       
-      <div className="session-layout">
-        <div className="clinician-panel">
-          <h3>👨‍⚕️ Clinician</h3>
-          <AudioControls 
-            speaker="clinician"
-            isActive={audio.activeSpeaker === 'clinician'}
-            audioLevel={audio.audioLevel}
-          />
-          <div className="last-text">
-            <strong>Last said:</strong>
-            <p>{audio.lastClinicianText || 'No speech detected yet'}</p>
-          </div>
+      {/* Service Selection */}
+      <div className="service-selection">
+        <h3>🔧 Translation Service</h3>
+        <div className="service-toggle">
+          <button
+            className={`service-btn ${!useSplitPipeline ? 'active' : ''}`}
+            onClick={() => setUseSplitPipeline(false)}
+          >
+            🚀 Realtime API
+          </button>
+          <button
+            className={`service-btn ${useSplitPipeline ? 'active' : ''}`}
+            onClick={() => setUseSplitPipeline(true)}
+          >
+            🔄 Split Pipeline
+          </button>
         </div>
-
-        <div className="transcript-panel">
-          <h3>📝 Live Transcript</h3>
-          <TranscriptPanel />
-        </div>
-
-        <div className="patient-panel">
-          <h3>👤 Patient</h3>
-          <AudioControls 
-            speaker="patient"
-            isActive={audio.activeSpeaker === 'patient'}
-            audioLevel={audio.audioLevel}
-          />
-          <div className="last-text">
-            <strong>Last said:</strong>
-            <p>{audio.lastPatientText || 'No speech detected yet'}</p>
-          </div>
-        </div>
+        <p className="service-description">
+          {useSplitPipeline 
+            ? "Split Pipeline: Separate ASR → Translation → TTS for maximum reliability"
+            : "Realtime API: Single WebRTC connection for low-latency streaming"
+          }
+        </p>
       </div>
+
+      {useSplitPipeline ? (
+        <div className="split-pipeline-layout">
+          <AudioRecorder 
+            encounterId={encounterId!}
+            patientId="patient-1"
+            clinicianId="clinician-1"
+          />
+          <div className="transcript-panel">
+            <h3>📝 Live Transcript</h3>
+            <TranscriptPanel />
+          </div>
+        </div>
+      ) : (
+        <div className="session-layout">
+          <div className="clinician-panel">
+            <h3>👨‍⚕️ Clinician</h3>
+            <AudioControls 
+              speaker="clinician"
+              isActive={audio.activeSpeaker === 'clinician'}
+              audioLevel={audio.audioLevel}
+            />
+            <div className="last-text">
+              <strong>Last said:</strong>
+              <p>{audio.lastClinicianText || 'No speech detected yet'}</p>
+            </div>
+          </div>
+
+          <div className="transcript-panel">
+            <h3>📝 Live Transcript</h3>
+            <TranscriptPanel />
+          </div>
+
+          <div className="patient-panel">
+            <h3>👤 Patient</h3>
+            <AudioControls 
+              speaker="patient"
+              isActive={audio.activeSpeaker === 'patient'}
+              audioLevel={audio.audioLevel}
+            />
+            <div className="last-text">
+              <strong>Last said:</strong>
+              <p>{audio.lastPatientText || 'No speech detected yet'}</p>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="actions-panel">
         <h3>🔧 Actions & Tools</h3>

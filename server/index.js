@@ -5,6 +5,7 @@ const rateLimit = require('express-rate-limit');
 const WebSocket = require('ws');
 const { PrismaClient } = require('@prisma/client');
 const OpenAI = require('openai');
+const multer = require('multer');
 require('dotenv').config();
 
 const app = express();
@@ -221,6 +222,105 @@ app.post('/api/tool/send_lab_order', async (req, res) => {
   } catch (error) {
     console.error('Error sending lab order:', error);
     res.status(500).json({ error: 'Failed to send lab order' });
+  }
+});
+
+// Split pipeline endpoints for robust translation
+// Step 1: ASR (Speech-to-Text)
+const upload = multer({ storage: multer.memoryStorage() });
+
+app.post('/api/asr', upload.single('audio'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No audio file provided' });
+    }
+
+    // Create a file-like object for OpenAI
+    const file = new File([req.file.buffer], 'audio.webm', { type: req.file.mimetype });
+
+    // Whisper transcription (auto language)
+    const t = await openai.audio.transcriptions.create({
+      file,
+      model: "whisper-1",
+      // optional: "translate": true if you want EN only, but here we just transcribe
+    });
+
+    // t.text is the transcript. Some SDKs also expose detected_language.
+    res.json({ transcript: t.text });
+  } catch (error) {
+    console.error('Error in ASR:', error);
+    res.status(500).json({ error: 'Failed to transcribe audio' });
+  }
+});
+
+// Step 2: Translation with structured JSON output
+app.post('/api/translate', async (req, res) => {
+  try {
+    const { transcript, original_speaker, target_speaker } = req.body;
+
+    const translationSchema = {
+      name: "MedicalInterpreterTurn",
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          language: { type: "string", enum: ["en", "es"] },
+          translation: { type: "string" },
+          original_speaker: { type: "string", enum: ["clinician", "patient"] },
+          target_speaker: { type: "string", enum: ["clinician", "patient"] }
+        },
+        required: ["language", "translation", "original_speaker", "target_speaker"]
+      },
+      strict: true
+    };
+
+    const r = await openai.responses.create({
+      model: "gpt-4o-mini", // supports Structured Outputs
+      response_format: { type: "json_schema", json_schema: translationSchema },
+      input: [
+        {
+          role: "system",
+          content:
+            "You are a medical interpreter. Translate exactly and preserve tone. No meta talk."
+        },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: `Original speaker: ${original_speaker}` },
+            { type: "text", text: `Target speaker: ${target_speaker}` },
+            { type: "text", text: `Source text:\n${transcript}` }
+          ]
+        }
+      ]
+    });
+
+    // r.output[0].content[0].text may vary by SDK; the SDK also exposes r.output_text
+    const json = JSON.parse(r.output_text);
+    res.json(json);
+  } catch (error) {
+    console.error('Error in translation:', error);
+    res.status(500).json({ error: 'Failed to translate text' });
+  }
+});
+
+// Step 3: TTS (Text-to-Speech)
+app.post('/api/tts', async (req, res) => {
+  try {
+    const { text } = req.body;
+
+    const speech = await openai.audio.speech.create({
+      model: "gpt-4o-mini-tts",
+      voice: "alloy",          // pick a voice
+      input: text,             // the translated sentence
+      format: "wav"            // or "mp3", "opus"
+    });
+
+    const buf = Buffer.from(await speech.arrayBuffer());
+    res.set('Content-Type', 'audio/wav');
+    res.send(buf);
+  } catch (error) {
+    console.error('Error in TTS:', error);
+    res.status(500).json({ error: 'Failed to generate speech' });
   }
 });
 

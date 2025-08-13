@@ -26,11 +26,77 @@
   100% { transform: rotate(360deg); }
 }
 
+/* Service Selection */
+.service-selection {
+  background: var(--bg-primary);
+  border-radius: 0.5rem;
+  padding: 1.5rem;
+  margin: 1rem;
+  box-shadow: var(--shadow-md);
+  border: 1px solid var(--border-color);
+  max-width: 1400px;
+  margin: 1rem auto;
+}
+
+.service-selection h3 {
+  margin: 0 0 1rem 0;
+  color: var(--text-primary);
+  font-size: 1.125rem;
+  font-weight: 600;
+}
+
+.service-toggle {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.service-btn {
+  flex: 1;
+  padding: 0.75rem 1.5rem;
+  border: 2px solid var(--border-color);
+  border-radius: 0.5rem;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.service-btn:hover {
+  border-color: var(--primary-color);
+  background: var(--bg-primary);
+}
+
+.service-btn.active {
+  border-color: var(--primary-color);
+  background: var(--primary-color);
+  color: white;
+}
+
+.service-description {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  line-height: 1.4;
+}
+
+/* Split Pipeline Layout */
+.split-pipeline-layout {
+  display: grid;
+  grid-template-columns: 1fr 2fr;
+  gap: 1rem;
+  height: calc(100vh - 300px);
+  padding: 1rem;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
 .session-layout {
   display: grid;
   grid-template-columns: 1fr 2fr 1fr;
   gap: 1rem;
-  height: calc(100vh - 200px);
+  height: calc(100vh - 300px);
   padding: 1rem;
   max-width: 1400px;
   margin: 0 auto;
@@ -192,7 +258,8 @@
 }
 
 @media (max-width: 768px) {
-  .session-layout {
+  .session-layout,
+  .split-pipeline-layout {
     grid-template-columns: 1fr;
     grid-template-rows: auto auto auto auto;
     height: auto;
@@ -204,6 +271,14 @@
   .patient-panel,
   .transcript-panel {
     min-height: 200px;
+  }
+  
+  .service-toggle {
+    flex-direction: column;
+  }
+  
+  .service-btn {
+    padding: 1rem 1.5rem;
   }
   
   .actions-panel {
