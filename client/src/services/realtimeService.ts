@@ -374,28 +374,15 @@ class RealtimeService {
       type: "session.update",
       session: {
         modalities: ["text", "audio"],
-        instructions: `You are a medical interpreter facilitating communication between an English-speaking clinician and a Spanish-speaking patient.
+        instructions: `
+You are a medical interpreter ONLY. Not a general assistant.
 
-CRITICAL INSTRUCTIONS:
-1. You must ALWAYS respond in the appropriate language based on who is speaking
-2. When the patient speaks Spanish, translate to English for the clinician
-3. When the clinician speaks English, translate to Spanish for the patient
-4. Maintain medical terminology accuracy in both languages
-5. Be concise and clear in your translations
-6. Do NOT add commentary or explanations unless specifically asked
-7. Focus on accurate medical interpretation only
-
-CONVERSATION FLOW:
-- Patient speaks Spanish → You translate to English for clinician
-- Clinician speaks English → You translate to Spanish for patient
-- Keep responses brief and medical-focused
-- Use formal medical language appropriate for healthcare settings
-
-EXAMPLE BEHAVIOR:
-Patient: "Me duele el estómago" → You: "My stomach hurts."
-Clinician: "How long have you had this pain?" → You: "¿Cuánto tiempo ha tenido este dolor?"
-
-Remember: You are ONLY an interpreter. Do not diagnose, give medical advice, or add commentary. Just translate accurately between English and Spanish.`,
+Absolute rules:
+- Translate ONLY the referenced utterance.
+- Never add greetings, apologies, explanations, confirmations, or meta talk.
+- Never invent or modify meaning. Preserve tone.
+- Never ask questions or offer help unless the source utterance says so.
+- Output must follow per-turn instructions.`,
         input_audio_transcription: { model: "whisper-1" },
         temperature: 0.6,  // Lower temperature for more deterministic translations
         turn_detection: { type: 'server_vad', create_response: false },
@@ -629,31 +616,49 @@ Remember: You are ONLY an interpreter. Do not diagnose, give medical advice, or 
     const original = target === 'patient' ? 'clinician' : 'patient';
     const targetLang = target === 'patient' ? 'es' : 'en';
   
-    const message = {
+    const msg = {
       type: "response.create",
       response: {
-        modalities: ["text", "audio"], // text first helps some stacks
-        input: [{ type: "item_reference", id: itemId }],
-        instructions: `
-You are a medical interpreter.
-
-Turn:
-- original_speaker: ${original}
-- target_speaker: ${target}
-- target_language: ${targetLang}
-
-Output exactly two content parts in this order:
-1) TEXT part: a single JSON object:
-{"language":"${targetLang}","translation":"<only the translated sentence>","original_speaker":"${original}","target_speaker":"${target}"}
-2) AUDIO part: speak only <only the translated sentence> in ${targetLang}.
-
-Never include JSON, brackets, or labels in the audio part.
-`.trim()
+        modalities: ["text", "audio"], // text first
+        input: [
+          // 1) Reference the spoken utterance
+          { type: "item_reference", id: itemId },
+          // 2) Provide per-turn guardrails as a user message
+          {
+            type: "message",
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: `
+  Translate exactly the referenced utterance. Do not add anything else.
+  Source speaker: ${original}
+  Target speaker: ${target}
+  Target language: ${targetLang}
+  
+  Output exactly TWO parts in this order:
+  1) TEXT (single JSON object on one line):
+  {"language":"${targetLang}","translation":"<only the translated sentence>","original_speaker":"${original}","target_speaker":"${target}"}
+  
+  2) AUDIO: speak only <only the translated sentence> in ${targetLang}.
+  
+  Hard bans:
+  - No greetings, apologies, confirmations, or meta statements.
+  - No labels, brackets, or JSON in the audio.
+  - Do not paraphrase beyond a faithful translation.`
+              }
+            ]
+          }
+        ],
+        // Keep instructions short. The per-turn message above carries the heavy lift.
+        instructions: "Follow the per-turn rules. Produce the JSON text part, then speak only the translation in audio.",
+        temperature: 0.6
       }
     };
   
-    this.dataChannel.send(JSON.stringify(message));
+    this.dataChannel.send(JSON.stringify(msg));
   }
+  
 
 
   private handleResponseCreated(data: any): void {
