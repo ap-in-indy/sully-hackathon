@@ -53,6 +53,28 @@ How do we make sure the patient isn't submitting a lab order?
 
 * One other potential feature? Webcam access for scanning QR or barcodes that could be on a doctor's name badge or keycard in order to authorize lab orders, appointment bookings, etc.
 
+# Value proposition / Business Case
+
+Really the first thing ot think about in any project is the big "why?"
+
+## Pain points of human translators
+
+* Scheduling - hard to find and schedule translators
+* Cost - human translators will come at a high cost
+* Reliability - human translators may not always be readily staffed and available
+* Transparency - human translators may not be able to rapidly transcribe their conversations in real-time, causing a loss of information and historical integrity
+* Privacy - not everyone may be comfortable with another human in the room with them talking about private medical concerns
+* Underserved demographic - not every office can afford or make translators available all of the time. hiring may mandate then that people speak multiple languages to address patients from different backgrounds.
+
+## The "why?"s for this app
+
+* Cost savings of the AI vs human translators
+* More immediate accessibility of AI-assisted translation versus scheduling of humans
+* Portability and privacy of the AI versus a human translator
+* Real-time transcriptions can alleviate concerns over lack of a record trail and mistranslations
+* No human needed in the room. Some people may be more comfortable with telling a computer program their personal concerns rather than another human
+* Broadly and vastly increases availability of higher quality confidence in medical care to these underserved demographics. Potentially expandable to other languages pending quality vetting of translation services between English and other languages.
+
 # Intended Deliverables
 
 **So that doctors can keep track of a patient's history over time:**
@@ -78,3 +100,26 @@ How do we make sure the patient isn't submitting a lab order?
 
 -------------
 
+# Technical Specifications
+
+## Tool contract:
+
+schedule_follow_up: {patient_id, date_iso, notes}
+
+send_lab_order: {patient_id, test_code, priority}
+
+repeat_last: {} (no webhook, just playback)
+
+Save these and their history to the database.
+
+## Speech to text and translations
+
+* We may need to implement a push to talk button akin to Google Translate if OpenAI's realtime API can't easily recognize who's speaking
+
+## Stretch goals
+
+* If abbreviations or uncommon terminology is used, highlight it and allow the patient to get an explanation of what it means. (Risky, as it could simply lead to more questions and physicians are very busy, but worth exploring)
+
+* (How do we get patients more of what they want while not overburdening the physician any further?)
+
+* 
