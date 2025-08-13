@@ -7,6 +7,7 @@ This guide will help you deploy the Sully Medical Translator to GitHub Pages.
 1. **GitHub Repository**: Make sure your repository is pushed to GitHub
 2. **Public Repository**: GitHub Pages requires the repository to be public (unless you have GitHub Pro)
 3. **Node.js**: Ensure you have Node.js installed on your system
+4. **GitHub Personal Access Token**: You'll need a PAT for authentication (see setup below)
 
 ## Quick Deployment
 
@@ -38,6 +39,35 @@ npm run build
 # Deploy to GitHub Pages
 npm run deploy
 ```
+
+## GitHub Authentication Setup
+
+Before deploying, you need to set up GitHub authentication:
+
+### Option 1: Personal Access Token (Recommended)
+
+1. **Create a Personal Access Token**:
+   - Go to GitHub.com → Settings → Developer settings → Personal access tokens → Tokens (classic)
+   - Click "Generate new token (classic)"
+   - Give it a name like "GitHub Pages Deployment"
+   - Select scopes: `repo` (full control of private repositories)
+   - Copy the generated token (you won't see it again!)
+
+2. **Configure Git to use the token**:
+   ```bash
+   git config --global credential.helper store
+   ```
+   
+   When prompted during deployment:
+   - **Username**: Your GitHub username (`ap-in-indy`)
+   - **Password**: Use your Personal Access Token (not your GitHub password)
+
+### Option 2: SSH Keys (Alternative)
+
+If you prefer SSH authentication:
+1. Generate SSH keys: `ssh-keygen -t ed25519 -C "your_email@example.com"`
+2. Add the public key to your GitHub account
+3. Update your repository remote to use SSH: `git remote set-url origin git@github.com:ap-in-indy/sully-hackathon.git`
 
 ## GitHub Pages Setup
 
@@ -100,7 +130,7 @@ app.use(cors({
 ## Production URL
 
 Once deployed, your app will be available at:
-**https://alexpritchard.github.io/sully-hackathon**
+**https://ap-in-indy.github.io/sully-hackathon**
 
 ## Updating the Deployment
 

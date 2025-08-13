@@ -2,7 +2,7 @@
   "name": "sully-medical-translator-client",
   "version": "0.1.0",
   "private": true,
-  "homepage": "https://alexpritchard.github.io/sully-hackathon",
+  "homepage": "https://ap-in-indy.github.io/sully-hackathon",
   "dependencies": {
     "@reduxjs/toolkit": "^1.9.7",
     "@types/node": "^16.18.68",
