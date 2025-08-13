@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
 import './PatientListPage.css';
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 interface Patient {
   id: string;
   name: string;

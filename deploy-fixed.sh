@@ -66,6 +66,13 @@ if [ ! -f ".env" ]; then
     print_warning "Please update .env with your actual API keys before deploying"
 fi
 
+# Fix ESLint issues before building
+print_status "Fixing ESLint issues..."
+if [ -f "fix-eslint.sh" ]; then
+    chmod +x fix-eslint.sh
+    ./fix-eslint.sh
+fi
+
 # Build the client
 print_status "Building React client..."
 cd client

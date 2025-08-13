@@ -325,6 +325,7 @@ class RealtimeService {
   }
 
   private addDemoTranscripts(): void {
+    // eslint-disable-next-line no-unreachable
     return;
     
     const demoTranscripts = [
