@@ -26,6 +26,9 @@ class RealtimeService {
   // Track when AI is speaking so we can avoid acoustic echo
   private isAiSpeaking = false;
 
+  // NEW: accumulate text output per response so we can parse JSON after it's complete
+  private textBuffers: Map<string, { acc: string; logged: boolean }> = new Map();
+
   async initialize(config: RealtimeConfig): Promise<void> {
     // Prevent concurrent init
     if (this.isInitializing) return;
@@ -159,42 +162,68 @@ class RealtimeService {
         model: this.config?.model || 'gpt-4o-realtime-preview-2024-12-17',
         modalities: ['audio', 'text'],
         voice: this.config?.voice || 'alloy',
-        // Explicit, focused instructions for a medical interpreter with one shared mic
-        instructions: `
-You are a real-time English–Spanish medical interpreter for a clinician–patient encounter using a single shared microphone.
+        // IMPORTANT: Do not forbid all text; permit exactly one JSON via tool call.
+        instructions: `You are a real-time English–Spanish medical interpreter for a clinician–patient encounter using a single shared microphone.
 
 Behavior:
-- Infer who is speaking (Clinician or Patient) purely from the content and context of the utterance.
-- For each turn, speak ONLY the translation into the other party's language as audio.
-- Maintain tone and register; be literal and concise. Do not add or omit information.
-- Do NOT output any text, captions, meta talk, acknowledgements, or explanations.
-- If uncertain who is speaking, make your best inference; avoid asking meta-questions.
-- If a greeting or short phrase is spoken, return only its literal translation as audio (e.g., “Hola” -> “Hello”).
-        `.trim(),
+
+Infer who is speaking (Clinician or Patient) purely from the content and context of the utterance.
+For each turn, speak ONLY the translation into the other party's language as audio.
+Maintain tone and register; be literal and concise. Do not add or omit information.
+After you finish speaking the audio for a turn:
+
+Call the tool "emit_metadata" exactly once with the following keys: { "Source Language": "<English|Spanish>", "Output Language": "<English|Spanish>", "Original Text": "<verbatim transcript of the speaker's utterance>", "Translated Text": "<the translation you just spoke>", "Intent Detected": "<one of: schedule follow-up appointment | order lab test | order prescription | none>" }
+Do not include any other text output beyond this tool call.`,
+        tools: [{
+          type: 'function',
+          name: 'emit_metadata',
+          description: 'Emit per-turn translation metadata after the audio translation is finished.',
+          parameters: {
+            type: 'object',
+            properties: {
+              'Source Language': {
+                type: 'string',
+                enum: ['English', 'Spanish']
+              },
+              'Output Language': {
+                type: 'string',
+                enum: ['English', 'Spanish']
+              },
+              'Original Text': {
+                type: 'string'
+              },
+              'Translated Text': {
+                type: 'string'
+              },
+              'Intent Detected': {
+                type: 'string',
+                enum: ['schedule follow-up appointment', 'order lab test', 'order prescription', 'none'],
+              },
+            },
+            required: ['Source Language', 'Output Language', 'Original Text', 'Translated Text', 'Intent Detected',],
+            additionalProperties: false,
+          },
+        },
+        ],
         input_audio_transcription: {
-          // Realtime supports multiple ASR options; keep whisper-1 for broad access
           model: 'whisper-1',
           prompt: 'Transcribe literally; do not paraphrase.',
         },
         temperature: Math.max(this.config?.temperature ?? 0.8, 0.6),
         max_response_output_tokens: 300,
-        // Let the server detect turns and automatically create responses
-        turn_detection: useSemanticVAD
-          ? {
-              type: 'semantic_vad',
-              eagerness: 'medium',
-              create_response: true,
-              interrupt_response: true,
-            }
-          : {
-              // Optional fallback: traditional VAD based on silence thresholds
-              type: 'server_vad',
-              threshold: 0.5,
-              prefix_padding_ms: 250,
-              silence_duration_ms: 500,
-              create_response: true,
-              interrupt_response: true,
-            },
+        turn_detection: useSemanticVAD ? {
+          type: 'semantic_vad',
+          eagerness: 'medium',
+          create_response: true,
+          interrupt_response: true,
+        } : {
+          type: 'server_vad',
+          threshold: 0.5,
+          prefix_padding_ms: 250,
+          silence_duration_ms: 500,
+          create_response: true,
+          interrupt_response: true,
+        },
       },
     };
 
@@ -210,6 +239,23 @@ Behavior:
   private onDCMessage = (event: MessageEvent) => {
     try {
       const data = JSON.parse(event.data);
+
+      // NEW: small helper to get a stable response id for buffering
+      const getResponseId = (ev: any): string => {
+        return (
+          ev?.response_id ||
+          ev?.response?.id ||
+          ev?.id || // fallback (shouldn't normally be needed)
+          'default'
+        );
+      };
+
+      // NEW: helper for function call args per response id
+      const getBuf = (rid: string) => {
+        const existing = this.textBuffers.get(rid) || { acc: '', logged: false };
+        return existing;
+      };
+
       switch (data.type) {
         // Robust error surfacing
         case 'error': {
@@ -218,6 +264,29 @@ Behavior:
           store.dispatch(setError(e.message || 'Realtime error'));
           break;
         }
+
+        // PRIMARY PATH: tool/function call for structured JSON
+        case 'response.function_call_arguments.delta':
+        case 'response.tool_call_arguments.delta': {
+          const rid = getResponseId(data);
+          const buf = getBuf(rid);
+          if (typeof data.delta === 'string') buf.acc += data.delta;
+          this.textBuffers.set(rid, buf);
+          break;
+        }
+        case 'response.function_call_arguments.done':
+        case 'response.tool_call_arguments.done': {
+          const rid = getResponseId(data);
+          const buf = getBuf(rid);
+          const text = buf.acc.trim();
+          if (text && !buf.logged) {
+            this.tryLogJson(text); // arguments are a JSON string
+            buf.logged = true;
+            this.textBuffers.set(rid, buf);
+          }
+          break;
+        }
+
         // Mute/unmute our mic while the model speaks to prevent feedback/echo bleed
         case 'output_audio_buffer.started':
           this.isAiSpeaking = true;
@@ -237,8 +306,44 @@ Behavior:
 
         // If a user starts speaking while the model is talking, cancel immediately
         case 'input_audio_buffer.speech_started':
-          this.cancelOngoingResponse();
+          if (this.isAiSpeaking) this.cancelOngoingResponse(); // avoid "no active response" error
           break;
+
+        // FALLBACK PATH: free-text JSON (if tool call not used)
+        case 'response.text.delta':
+        case 'response.output_text.delta': {
+          const rid = getResponseId(data);
+          const buf = getBuf(rid);
+          if (typeof data.delta === 'string') buf.acc += data.delta;
+          this.textBuffers.set(rid, buf);
+          break;
+        }
+        case 'response.text.done':
+        case 'response.output_text.done': {
+          const rid = getResponseId(data);
+          const buf = getBuf(rid);
+          const text = buf.acc?.trim?.() || (typeof data.text === 'string' ? data.text.trim() : '');
+          if (text && !buf.logged) {
+            this.tryLogJson(text);
+            buf.logged = true;
+            this.textBuffers.set(rid, buf);
+          }
+          break;
+        }
+
+        case 'response.done': {
+          // Safety net: if we somehow missed *.done but have buffered text, attempt parse+log now.
+          const rid = getResponseId(data);
+          const buf = this.textBuffers.get(rid);
+          if (buf && buf.acc && !buf.logged) {
+            this.tryLogJson(buf.acc.trim());
+            buf.logged = true;
+            this.textBuffers.set(rid, buf);
+          }
+          // Cleanup any buffers we no longer need to hold
+          this.textBuffers.delete(rid);
+          break;
+        }
 
         default:
           // Keep unknown types from spamming logs
@@ -249,6 +354,31 @@ Behavior:
       // Swallow parse errors to keep the loop resilient
     }
   };
+
+  // NEW: Parse and log JSON only if it looks like the model emitted the required object.
+  // We intentionally do not mutate UI state or behavior to keep translation stable.
+  private tryLogJson(text: string): void {
+    const s = text.trim();
+    const looksLikeJson = s.startsWith('{') && s.endsWith('}');
+    if (!looksLikeJson) return;
+    try {
+      const obj = JSON.parse(s);
+      const hasKeys =
+        obj &&
+        typeof obj === 'object' &&
+        'Source Language' in obj &&
+        'Output Language' in obj &&
+        'Original Text' in obj &&
+        'Translated Text' in obj &&
+        'Intent Detected' in obj;
+
+      if (hasKeys) {
+        console.log('[Realtime JSON]', obj);
+      }
+    } catch {
+      // ignore malformed
+    }
+  }
 
   private muteInput(shouldMute: boolean): void {
     if (!this.localStream) return;
@@ -277,11 +407,11 @@ Behavior:
         this.localStream = null;
       }
       if (this.dc) {
-        try { this.dc.close(); } catch {}
+        try { this.dc.close(); } catch { }
         this.dc = null;
       }
       if (this.pc) {
-        try { this.pc.close(); } catch {}
+        try { this.pc.close(); } catch { }
         this.pc = null;
       }
       if (this.audioEl) {
@@ -292,6 +422,9 @@ Behavior:
       this.isConnected = false;
       this.isAiSpeaking = false;
       this.config = null;
+
+      // NEW: clear any partial buffers
+      this.textBuffers.clear();
 
       store.dispatch(setConnectionStatus(false));
       store.dispatch(setError(null));
