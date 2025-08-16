@@ -127,12 +127,10 @@ const SessionPage: React.FC = () => {
           <h3>👨‍⚕️ Clinician</h3>
           <AudioControls 
             speaker="clinician"
-            isActive={audio.activeSpeaker === 'clinician'}
-            audioLevel={audio.audioLevel}
           />
           <div className="last-text">
-            <strong>Last said:</strong>
-            <p>{audio.lastClinicianText || 'No speech detected yet'}</p>
+            <strong>Status:</strong>
+            <p>Audio translation active</p>
           </div>
         </div>
 
@@ -145,12 +143,10 @@ const SessionPage: React.FC = () => {
           <h3>👤 Patient</h3>
           <AudioControls 
             speaker="patient"
-            isActive={audio.activeSpeaker === 'patient'}
-            audioLevel={audio.audioLevel}
           />
           <div className="last-text">
-            <strong>Last said:</strong>
-            <p>{audio.lastPatientText || 'No speech detected yet'}</p>
+            <strong>Status:</strong>
+            <p>Audio translation active</p>
           </div>
         </div>
       </div>
@@ -164,8 +160,8 @@ const SessionPage: React.FC = () => {
           <h4>🔍 Connection Status</h4>
           <div className="connection-info">
             <p><strong>Connected:</strong> {session.isConnected ? '✅ Yes' : '❌ No'}</p>
-            <p><strong>Audio Level:</strong> {Math.round(audio.audioLevel)}%</p>
-            <p><strong>Active Speaker:</strong> {audio.activeSpeaker || 'None'}</p>
+            <p><strong>Mode:</strong> Audio-only translation</p>
+            <p><strong>Status:</strong> Real-time voice processing</p>
           </div>
           
           <div className="connection-actions">
@@ -185,10 +181,17 @@ const SessionPage: React.FC = () => {
             
             <button 
               className="btn btn-outline btn-sm"
-              onClick={() => realtimeService.testConnection()}
+              onClick={() => {
+                const status = realtimeService.getConnectionStatus();
+                console.log('Connection Status:', status);
+                dispatch(addNotification({
+                  type: 'info',
+                  message: `Connection: ${status.dataChannelState}, Peer: ${status.peerConnectionState}, ICE: ${status.iceConnectionState}`
+                }));
+              }}
               disabled={!session.isConnected}
             >
-              🧪 Test Connection
+              📊 Connection Status
             </button>
 
             <button 
