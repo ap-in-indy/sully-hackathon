@@ -16,6 +16,11 @@ class RealtimeService {
   private isConnected = false;
   private config: RealtimeConfig | null = null;
   private isInitializing = false; // Guard against concurrent initialization
+  
+  // Add state tracking for response management
+  private activeResponseId: string | null = null;
+  private isAiSpeaking = false;
+  private hasPendingResponse = false;
 
   async initialize(config: RealtimeConfig): Promise<void> {
     // Prevent concurrent initialization
@@ -184,21 +189,30 @@ class RealtimeService {
         voice: 'alloy',
         // Strong, global rule: translate to the opposite language as audio-only
         instructions: `
-You are a real-time medical interpreter.
-Behavior:
-- Input can be English or Spanish.
-- For each human speech turn, output ONLY the translation in the opposite language as spoken audio.
-- Do not produce any text, captions, greetings, meta commentary, or explanations.
-- Preserve tone and intent; no additions or omissions.
-- If input is English, speak Spanish. If input is Spanish, speak English.
-- Be concise when appropriate and keep the same register.
+You are a real-time English–Spanish interpreter.
+
+Rules:
+
+Input may be English or Spanish.
+
+For each complete user utterance, output ONLY the translation in the opposite language as spoken audio.
+
+Do not add words, do not omit words, do not summarize, do not ask questions, do not add pleasantries.
+
+If the user says a greeting or a short phrase (e.g., "Hola"), return exactly the literal translation ("Hello"). Nothing else.
+
+Maintain tone and register, but be concise and literal.
+
+Never output text, captions, meta talk, or explanations.
 `,
-        input_audio_transcription: { model: 'whisper-1' },
+        input_audio_transcription: { model: 'whisper-1', prompt: 'Transcribe literally; do not paraphrase.' },
         temperature: 0.6,
+        max_response_output_tokens: 300,
         // Let the server VAD detect turns and automatically create responses
         turn_detection: {
           type: 'server_vad',
-          create_response: true
+          create_response: true,
+          interrupt_response: true
         }
       }
     };
@@ -229,11 +243,13 @@ Behavior:
         // When the model starts/stops speaking, mute/unmute mic to prevent feedback/echo.
         case 'output_audio_buffer.started':
           console.log('AI started speaking - muting input');
+          this.isAiSpeaking = true;
           this.muteInput(true);
           break;
 
         case 'output_audio_buffer.stopped':
           console.log('AI stopped speaking - unmuting input');
+          this.isAiSpeaking = false;
           this.muteInput(false);
           break;
 
@@ -249,18 +265,27 @@ Behavior:
           break;
         case 'response.created':
           console.log('AI response created');
+          this.activeResponseId = data.response_id;
+          this.hasPendingResponse = true;
           break;
         case 'response.done':
           console.log('AI response completed');
+          this.hasPendingResponse = false;
+          this.activeResponseId = null;
           break;
         case 'response.cancelled':
           console.log('AI response cancelled');
+          this.hasPendingResponse = false;
+          this.activeResponseId = null;
           break;
 
         // If the user starts speaking while the model is talking, cancel model output
         case 'input_audio_buffer.speech_started':
           console.log('User speech detected - cancelling AI response');
-          this.cancelOngoingResponse();
+          // Only cancel if something is active; otherwise ignore to avoid the error
+          if (this.isAiSpeaking || this.hasPendingResponse) {
+            this.cancelOngoingResponse();
+          }
           break;
 
         default:
@@ -321,6 +346,10 @@ Behavior:
 
       this.isConnected = false;
       this.config = null;
+      // Reset response state tracking
+      this.activeResponseId = null;
+      this.isAiSpeaking = false;
+      this.hasPendingResponse = false;
       store.dispatch(setConnectionStatus(false));
       store.dispatch(setError(null));
     } catch (error) {
