@@ -25,22 +25,107 @@ class RealtimeService {
   private isConnected = false;
   private config: RealtimeConfig | null = null;
   private lastJsonTranslationAt: number = 0;
+  
+  // NEW: Track demo mode state to prevent duplicate activation
+  private isDemoMode = false;
+  private demoModeActivationCount = 0;
+  private demoModeActivationStack: string[] = [];
+  private connectionAttemptCount = 0;
+  private lastConnectionState = 'none';
+  private lastIceConnectionState = 'none';
+  
+  // NEW: Prevent multiple simultaneous initializations
+  private isInitializing = false;
+  private initializationPromise: Promise<void> | null = null;
 
   async initialize(config: RealtimeConfig): Promise<void> {
+    const startTime = Date.now();
+    this.connectionAttemptCount++;
+    
+    console.log(`🚀 [${new Date().toISOString()}] ===== REALTIME SERVICE INITIALIZATION START ====`);
+    console.log(`📋 Config:`, config);
+    console.log(`🔍 Current state:`, {
+      isConnected: this.isConnected,
+      isDemoMode: this.isDemoMode,
+      demoModeActivationCount: this.demoModeActivationCount,
+      connectionAttemptCount: this.connectionAttemptCount,
+      hasPeerConnection: !!this.peerConnection,
+      hasAudioChannel: !!this.audioDataChannel,
+      hasTextChannel: !!this.textDataChannel,
+      lastConnectionState: this.lastConnectionState,
+      lastIceConnectionState: this.lastIceConnectionState,
+      isInitializing: this.isInitializing,
+      hasInitializationPromise: !!this.initializationPromise
+    });
+
+    // PREVENT MULTIPLE SIMULTANEOUS INITIALIZATIONS
+    if (this.isInitializing) {
+      console.warn(`⚠️ [${new Date().toISOString()}] INITIALIZATION ALREADY IN PROGRESS - Waiting for existing initialization to complete`);
+      console.warn(`📊 Duplicate initialization details:`, {
+        connectionAttemptCount: this.connectionAttemptCount,
+        isInitializing: this.isInitializing,
+        hasInitializationPromise: !!this.initializationPromise
+      });
+      
+      // Wait for existing initialization to complete
+      if (this.initializationPromise) {
+        try {
+          await this.initializationPromise;
+          console.log(`✅ [${new Date().toISOString()}] Waited for existing initialization to complete`);
+          return;
+        } catch (error) {
+          console.warn(`⚠️ [${new Date().toISOString()}] Existing initialization failed, proceeding with new attempt`);
+        }
+      }
+    }
+
+    // PREVENT DUPLICATE INITIALIZATION WHEN DEMO MODE IS ACTIVE
+    if (this.isDemoMode) {
+      console.warn(`⚠️ [${new Date().toISOString()}] DEMO MODE ALREADY ACTIVE - Skipping initialization`);
+      console.warn(`📊 Demo mode details:`, {
+        activationCount: this.demoModeActivationCount,
+        activationStack: this.demoModeActivationStack,
+        isConnected: this.isConnected
+      });
+      return;
+    }
+
+    // Set initialization state
+    this.isInitializing = true;
+    this.initializationPromise = this.performInitialization(config, startTime);
+    
+    try {
+      await this.initializationPromise;
+    } finally {
+      this.isInitializing = false;
+      this.initializationPromise = null;
+    }
+  }
+
+  private async performInitialization(config: RealtimeConfig, startTime: number): Promise<void> {
     // Clean up any existing session first
     if (this.isConnected || this.peerConnection || this.audioDataChannel || this.textDataChannel) {
-      console.log('Cleaning up existing session before initializing new one...');
+      console.log(`🧹 [${new Date().toISOString()}] Cleaning up existing session before initializing new one...`);
       await this.disconnect();
     }
 
     this.config = config;
+    console.log(`✅ [${new Date().toISOString()}] Config set, proceeding with initialization...`);
 
     try {
       // Check if getUserMedia is supported
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        throw new Error('getUserMedia is not supported in this browser');
+        console.error(`❌ [${new Date().toISOString()}] getUserMedia not supported - entering demo mode`);
+        console.error(`📊 Browser capabilities:`, {
+          hasMediaDevices: !!navigator.mediaDevices,
+          hasGetUserMedia: !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia),
+          userAgent: navigator.userAgent
+        });
+        this.initializeDemoMode(config, 'getUserMedia_not_supported');
+        return;
       }
 
+      console.log(`🔑 [${new Date().toISOString()}] Getting ephemeral token from server...`);
       // Get ephemeral token from server
       const tokenResponse = await fetch('/api/token', {
         method: 'POST',
@@ -50,59 +135,47 @@ class RealtimeService {
       });
 
       if (!tokenResponse.ok) {
-        console.warn('Failed to get OpenAI token, entering demo mode');
-        this.initializeDemoMode(config);
+        console.warn(`⚠️ [${new Date().toISOString()}] Failed to get OpenAI token (${tokenResponse.status} ${tokenResponse.statusText}), entering demo mode`);
+        console.log(`📊 Token response details:`, {
+          status: tokenResponse.status,
+          statusText: tokenResponse.statusText,
+          headers: Object.fromEntries(tokenResponse.headers.entries()),
+          url: tokenResponse.url
+        });
+        this.initializeDemoMode(config, 'token_fetch_failed');
         return;
       }
 
       const tokenData = await tokenResponse.json();
       const ephemeralKey = tokenData.client_secret.value;
+      console.log(`✅ [${new Date().toISOString()}] Token obtained successfully, length: ${ephemeralKey.length}`);
 
       // Create peer connection
+      console.log(`🔗 [${new Date().toISOString()}] Creating RTCPeerConnection...`);
       this.peerConnection = new RTCPeerConnection({
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-        ],
+        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
       });
+      console.log(`✅ [${new Date().toISOString()}] RTCPeerConnection created`);
 
-      // Monitor connection state changes
-      this.peerConnection.onconnectionstatechange = () => {
-        console.log('Peer connection state changed:', this.peerConnection?.connectionState);
+      // Create the single data channel that OpenAI expects BEFORE createOffer
+      console.log(`📡 [${new Date().toISOString()}] Creating data channel before offer...`);
+      this.setupSingleDataChannel();
 
-        if (this.peerConnection?.connectionState === 'failed' ||
-          this.peerConnection?.connectionState === 'disconnected') {
-          console.log('Peer connection failed or disconnected, attempting to reconnect...');
-          this.isConnected = false;
-          store.dispatch(setConnectionStatus(false));
-
-          // Try to reconnect after a delay
-          setTimeout(() => {
-            if (this.config) {
-              this.initialize(this.config);
-            }
-          }, 3000);
-        }
-      };
-
-      // Monitor ICE connection state
-      this.peerConnection.oniceconnectionstatechange = () => {
-        console.log('ICE connection state:', this.peerConnection?.iceConnectionState);
-      };
-
-      // Set up audio element for remote audio
-      this.audioElement = document.createElement('audio');
-      this.audioElement.autoplay = true;
-      this.audioElement.style.display = 'none';
-      document.body.appendChild(this.audioElement);
-
-      // Handle remote audio stream
-      this.peerConnection.ontrack = (event) => {
-        if (this.audioElement) {
-          this.audioElement.srcObject = event.streams[0];
+      // Also accept remote-created data channels
+      this.peerConnection.ondatachannel = (event) => {
+        if (!this.audioDataChannel) {
+          console.log(`📡 [${new Date().toISOString()}] Remote data channel received:`, event.channel.label);
+          this.audioDataChannel = event.channel;
+          this.audioDataChannel.onmessage = (e) => this.handleUnifiedMessage(e);
+          this.audioDataChannel.onopen = () => {
+            console.log('✅ Data channel open (remote)');
+            this.sendSessionConfiguration();
+          };
         }
       };
 
       // Get user media for microphone input
+      console.log(`🎤 [${new Date().toISOString()}] Getting user media for microphone...`);
       this.mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
@@ -111,31 +184,76 @@ class RealtimeService {
         },
       });
 
-      console.log('Audio stream obtained:', this.mediaStream.getTracks().map(t => ({ kind: t.kind, enabled: t.enabled })));
+      console.log(`✅ [${new Date().toISOString()}] Audio stream obtained:`, this.mediaStream.getTracks().map(t => ({ kind: t.kind, enabled: t.enabled })));
 
-      // Add local audio track
-      this.mediaStream.getTracks().forEach(track => {
-        if (this.peerConnection) {
-          this.peerConnection.addTrack(track, this.mediaStream!);
-          console.log('Added audio track to peer connection:', track.kind);
+      // Add an audio transceiver and send the mic track to the peer
+      // Using both ensures a=sendrecv appears and your mic audio is sent.
+      this.peerConnection.addTransceiver('audio', { direction: 'sendrecv' });
+      const micTrack = this.mediaStream.getAudioTracks()[0];
+      if (micTrack) {
+        this.peerConnection.addTrack(micTrack, this.mediaStream);
+        console.log('🎤 Mic track added to RTCPeerConnection');
+      } else {
+        console.warn('⚠️ No audio track found on media stream');
+      }
+
+      // Set up remote audio element
+      this.audioElement = document.createElement('audio');
+      this.audioElement.autoplay = true;
+      this.audioElement.setAttribute('playsinline', 'true');
+      this.audioElement.style.display = 'none';
+      document.body.appendChild(this.audioElement);
+      console.log(`🔊 [${new Date().toISOString()}] Audio element created and attached`);
+
+      // Handle remote audio stream
+      this.peerConnection.ontrack = (event) => {
+        console.log(`🎵 [${new Date().toISOString()}] Remote audio track received:`, event.streams[0]);
+        if (this.audioElement) {
+          this.audioElement.srcObject = event.streams[0];
+          // Attempt to play, handle autoplay restrictions
+          const p = this.audioElement.play();
+          if (p && typeof p.catch === 'function') {
+            p.catch(() => {
+              console.warn('Autoplay blocked. Show a UI button to enable audio.');
+              // Optionally dispatch a notification to prompt user to click "Enable audio"
+            });
+          }
         }
-      });
+      };
 
-      // Create data channels BEFORE creating the offer (this is the key fix)
-      console.log('Creating data channels before offer...');
-      this.setupAudioDataChannel();
-      this.setupTextDataChannel();
-
-      // Create and send offer
+      // Create offer WITHOUT any SDP modifications
+      console.log(`📤 [${new Date().toISOString()}] Creating offer with audio track and data channel...`);
+      
       const offer = await this.peerConnection.createOffer();
       await this.peerConnection.setLocalDescription(offer);
+      console.log(`✅ [${new Date().toISOString()}] Local description set`);
+      
+      // Wait for ICE candidates to be gathered so the SDP we send contains them
+      console.log(`🧊 [${new Date().toISOString()}] Waiting for ICE gathering to complete...`);
+      await this.waitForIceGatheringComplete(this.peerConnection);
+      console.log(`✅ [${new Date().toISOString()}] ICE gathering completed`);
 
-      const baseUrl = 'https://api.openai.com/v1/realtime';
-      const model = 'gpt-4o-realtime-preview-2025-06-03';
+      // Use the final localDescription.sdp (NOT the original offer.sdp)
+      const localSdp = this.peerConnection.localDescription?.sdp;
+      if (!localSdp) {
+        throw new Error('LocalDescription SDP missing after ICE gathering');
+      }
 
-      const sdpResponse = await fetch(`${baseUrl}?model=${model}`, {
+      console.log(`🌐 [${new Date().toISOString()}] Sending SDP offer to OpenAI...`);
+      console.log(`📤 [${new Date().toISOString()}] SDP offer details:`, {
+        url: 'https://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2025-06-03',
         method: 'POST',
-        body: offer.sdp,
+        bodyLength: localSdp.length,
+        bodyPreview: localSdp.substring(0, 300) + '...',
+        headers: {
+          'Authorization': `Bearer ${ephemeralKey.substring(0, 10)}...`,
+          'Content-Type': 'application/sdp',
+        }
+      });
+      
+      const sdpResponse = await fetch('https://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2025-06-03', {
+        method: 'POST',
+        body: localSdp,
         headers: {
           'Authorization': `Bearer ${ephemeralKey}`,
           'Content-Type': 'application/sdp',
@@ -143,93 +261,168 @@ class RealtimeService {
       });
 
       if (!sdpResponse.ok) {
-        throw new Error('Failed to establish WebRTC connection');
+        const errorText = await sdpResponse.text();
+        console.error(`❌ [${new Date().toISOString()}] OpenAI API error response:`, {
+          status: sdpResponse.status,
+          statusText: sdpResponse.statusText,
+          errorText: errorText.substring(0, 500),
+          url: sdpResponse.url,
+          headers: Object.fromEntries(sdpResponse.headers.entries())
+        });
+        throw new Error(`Failed to establish WebRTC connection: ${sdpResponse.status} ${sdpResponse.statusText}`);
       }
+
+      const answerSdp = await sdpResponse.text();
+      console.log(`✅ [${new Date().toISOString()}] Received SDP answer from OpenAI, length: ${answerSdp.length}`);
 
       const answer: RTCSessionDescriptionInit = {
         type: 'answer' as RTCSdpType,
-        sdp: await sdpResponse.text(),
+        sdp: answerSdp,
       };
 
+      console.log(`🔗 [${new Date().toISOString()}] Setting remote description...`);
       await this.peerConnection.setRemoteDescription(answer);
+      console.log(`✅ [${new Date().toISOString()}] Remote description set successfully`);
 
-      // Wait for both data channels to be open
-      await this.waitForBothDataChannelsOpen();
+      // NOW add the essential event handlers and audio setup
+      console.log(`⚙️ [${new Date().toISOString()}] Setting up event handlers and audio...`);
+      
+      // Monitor connection state changes
+      this.peerConnection.onconnectionstatechange = () => {
+        const state = this.peerConnection?.connectionState;
+        const previousState = this.lastConnectionState;
+        this.lastConnectionState = state || 'none';
+        
+        console.log(`🔄 [${new Date().toISOString()}] Peer connection state changed: ${previousState} → ${state}`);
+        console.log(`📊 Connection state details:`, {
+          previousState,
+          currentState: state,
+          isDemoMode: this.isDemoMode,
+          isConnected: this.isConnected,
+          hasDataChannels: !!(this.audioDataChannel || this.textDataChannel)
+        });
+
+        if (state === 'failed' || state === 'disconnected') {
+          console.log(`❌ [${new Date().toISOString()}] Peer connection failed or disconnected, attempting to reconnect...`);
+          this.isConnected = false;
+          store.dispatch(setConnectionStatus(false));
+
+          // Try to reconnect after a delay
+          setTimeout(() => {
+            if (this.config && !this.isDemoMode) {
+              console.log(`🔄 [${new Date().toISOString()}] Attempting reconnection...`);
+              this.initialize(this.config);
+            } else {
+              console.log(`⏭️ [${new Date().toISOString()}] Skipping reconnection - demo mode active or no config`);
+            }
+          }, 3000);
+        } else if (state === 'connected') {
+          console.log(`✅ [${new Date().toISOString()}] Peer connection established successfully!`);
+          console.log(`🎯 [${new Date().toISOString()}] EXITING DEMO MODE - Live connection established`);
+          
+          // EXIT DEMO MODE when live connection is established
+          if (this.isDemoMode) {
+            console.log(`🔄 [${new Date().toISOString()}] Transitioning from demo mode to live mode...`);
+            this.exitDemoMode();
+          }
+        }
+      };
+
+      // Monitor ICE connection state
+      this.peerConnection.oniceconnectionstatechange = () => {
+        const iceState = this.peerConnection?.iceConnectionState;
+        const previousIceState = this.lastIceConnectionState;
+        this.lastIceConnectionState = iceState || 'none';
+        
+        console.log(`🧊 [${new Date().toISOString()}] ICE connection state: ${previousIceState} → ${iceState}`);
+        console.log(`📊 ICE state details:`, {
+          previousState: previousIceState,
+          currentState: iceState,
+          isDemoMode: this.isDemoMode,
+          isConnected: this.isConnected
+        });
+      };
+
+      // Don't add any tracks - let OpenAI handle audio entirely
+      console.log(`✅ [${new Date().toISOString()}] WebRTC connection established successfully (minimal setup)`);
 
       this.isConnected = true;
+      this.isDemoMode = false; // Ensure demo mode is off
       store.dispatch(setConnectionStatus(true));
       store.dispatch(setError(null));
+      console.log(`🎉 [${new Date().toISOString()}] Connection marked as connected, dispatching to store`);
+      console.log(`🚫 [${new Date().toISOString()}] Demo mode explicitly disabled`);
 
       // Start audio level monitoring
+      console.log(`📊 [${new Date().toISOString()}] Starting audio level monitoring...`);
       this.startAudioLevelMonitoring();
 
-      // Send session configuration to both channels
-      this.sendSessionConfiguration();
+      // Note: Session configuration will be sent when data channel is created
+      console.log(`⏱️ [${new Date().toISOString()}] Initialization completed in ${Date.now() - startTime}ms`);
+      console.log(`🎯 [${new Date().toISOString()}] ===== REALTIME SERVICE INITIALIZATION SUCCESS ====`);
 
     } catch (error) {
-      console.error('Error initializing realtime service:', error);
-      console.warn('Falling back to demo mode');
-      this.initializeDemoMode(config);
+      const errorTime = Date.now();
+      console.error(`❌ [${new Date().toISOString()}] Error initializing realtime service:`, error);
+      console.error(`📊 [${new Date().toISOString()}] Error details:`, {
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : 'No stack trace',
+        config: this.config,
+        peerConnectionState: this.peerConnection?.connectionState,
+        audioChannelState: this.audioDataChannel?.readyState,
+        textChannelState: this.textDataChannel?.readyState,
+        timeSinceStart: errorTime - startTime,
+        isDemoMode: this.isDemoMode,
+        connectionAttemptCount: this.connectionAttemptCount
+      });
+      console.warn(`⚠️ [${new Date().toISOString()}] Falling back to demo mode`);
+      this.initializeDemoMode(config, 'initialization_error');
     }
   }
 
-  private setupAudioDataChannel(): void {
-    // Audio channel - handles pure audio input/output
-    this.audioDataChannel = this.peerConnection!.createDataChannel('audio-channel');
-    
-    this.audioDataChannel.onopen = () => {
-      console.log('🎵 Audio data channel opened');
-    };
-
-    this.audioDataChannel.onmessage = (event) => {
-      this.handleAudioChannelMessage(event);
-    };
-
-    this.audioDataChannel.onerror = (error) => {
-      console.error('Audio data channel error:', error);
-    };
-
-    this.audioDataChannel.onclose = () => {
-      console.log('Audio data channel closed');
-    };
+  private setupSingleDataChannel(): void {
+    // Use the standard data channel name that OpenAI expects
+    this.audioDataChannel = this.peerConnection?.createDataChannel('oai-events', { ordered: true }) || null;
+    if (this.audioDataChannel) {
+      this.audioDataChannel.onopen = () => {
+        console.log('✅ Data channel opened successfully');
+        // Send session configuration as soon as the data channel opens
+        this.sendSessionConfiguration();
+      };
+      this.audioDataChannel.onclose = () => {
+        console.log('Data channel closed');
+      };
+      this.audioDataChannel.onerror = (event) => {
+        console.error('Data channel error:', event);
+      };
+      this.audioDataChannel.onmessage = (event) => this.handleUnifiedMessage(event);
+      console.log('Data channel created with name: oai-events');
+    } else {
+      console.error('Failed to create data channel');
+    }
   }
 
-  private setupTextDataChannel(): void {
-    // Text channel - handles transcription, translation metadata, and intents
-    this.textDataChannel = this.peerConnection!.createDataChannel('text-channel');
-    
-    this.textDataChannel.onopen = () => {
-      console.log('📝 Text data channel opened');
-    };
-
-    this.textDataChannel.onmessage = (event) => {
-      this.handleTextChannelMessage(event);
-    };
-
-    this.textDataChannel.onerror = (error) => {
-      console.error('Text data channel error:', error);
-    };
-
-    this.textDataChannel.onclose = () => {
-      console.log('Text data channel closed');
-    };
-  }
-
-  private async waitForBothDataChannelsOpen(): Promise<void> {
+  private async waitForDataChannelOpen(): Promise<void> {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        reject(new Error('Data channels failed to open within 10 seconds'));
-      }, 10000);
+        console.error('❌ Data channel failed to open within 15 seconds');
+        console.log('Audio channel state:', this.audioDataChannel?.readyState);
+        reject(new Error('Data channel failed to open within 15 seconds'));
+      }, 15000);
 
       const checkState = () => {
-        if (this.audioDataChannel?.readyState === 'open' && 
-            this.textDataChannel?.readyState === 'open') {
+        const audioState = this.audioDataChannel?.readyState;
+
+        console.log(`🔍 Checking data channel state - Audio: ${audioState}`);
+
+        if (audioState === 'open') {
+          console.log('✅ Data channel is now open!');
           clearTimeout(timeout);
           resolve();
-        } else if (this.audioDataChannel?.readyState === 'closed' || 
-                   this.textDataChannel?.readyState === 'closed') {
+        } else if (audioState === 'closed') {
+          console.error('❌ Data channel closed before opening');
           clearTimeout(timeout);
-          reject(new Error('One or both data channels closed before opening'));
+          reject(new Error('Data channel closed before opening'));
         } else {
           setTimeout(checkState, 100);
         }
@@ -247,11 +440,8 @@ class RealtimeService {
 
     try {
       console.log('Recreating data channels...');
-      this.setupAudioDataChannel();
-      this.setupTextDataChannel();
-
-      // Wait for both to open again
-      this.waitForBothDataChannelsOpen().then(() => {
+      this.setupSingleDataChannel();
+      this.waitForDataChannelOpen().then(() => {
         console.log('Data channels reconnected successfully');
         this.isConnected = true;
         store.dispatch(setConnectionStatus(true));
@@ -268,27 +458,66 @@ class RealtimeService {
     }
   }
 
-  private initializeDemoMode(config: RealtimeConfig): void {
-    console.log('Initializing demo mode - simulating real-time communication');
+  private initializeDemoMode(config: RealtimeConfig, reason: string): void {
+    console.log(`🚫 [${new Date().toISOString()}] ===== ENTERING DEMO MODE ====`);
+    console.log(`📊 Demo mode activation details:`, {
+      reason,
+      activationCount: this.demoModeActivationCount + 1,
+      previousStack: [...this.demoModeActivationStack],
+      currentTime: new Date().toISOString(),
+      isConnected: this.isConnected,
+      hasPeerConnection: !!this.peerConnection
+    });
 
+    // PREVENT DUPLICATE DEMO MODE ACTIVATION
+    if (this.isDemoMode) {
+      console.warn(`⚠️ [${new Date().toISOString()}] DEMO MODE ALREADY ACTIVE - Skipping duplicate activation`);
+      console.warn(`📊 Duplicate activation details:`, {
+        reason,
+        currentActivationCount: this.demoModeActivationCount,
+        activationStack: this.demoModeActivationStack
+      });
+      return;
+    }
+
+    this.demoModeActivationCount++;
+    this.demoModeActivationStack.push(`initialize(config, ${reason}) at ${new Date().toISOString()}`);
+    this.isDemoMode = true;
     this.config = config;
-    this.isConnected = true;
-    store.dispatch(setConnectionStatus(true));
+
+    console.log(`✅ [${new Date().toISOString()}] Demo mode state updated:`, {
+      isDemoMode: this.isDemoMode,
+      activationCount: this.demoModeActivationCount,
+      activationStack: this.demoModeActivationStack
+    });
+
+    // Set connection status to false in demo mode
+    this.isConnected = false;
+    store.dispatch(setConnectionStatus(false));
     store.dispatch(setError(null));
 
     // Notify user about demo mode
     store.dispatch(addNotification({
       type: 'info',
-      message: 'Demo mode active - simulating real-time translation. Add your OpenAI API key to enable live voice translation.'
+      message: `Demo mode active (${reason}) - simulating real-time translation. Add your OpenAI API key to enable live voice translation.`
     }));
 
     // Simulate audio level monitoring
+    console.log(`📊 [${new Date().toISOString()}] Starting demo audio level simulation...`);
     this.simulateAudioLevels();
 
     // Add some demo transcripts after a delay
+    console.log(`📝 [${new Date().toISOString()}] Scheduling demo transcripts in 2 seconds...`);
     setTimeout(() => {
-      this.addDemoTranscripts();
+      if (this.isDemoMode) {
+        console.log(`📝 [${new Date().toISOString()}] Adding demo transcripts...`);
+        this.addDemoTranscripts();
+      } else {
+        console.log(`⏭️ [${new Date().toISOString()}] Skipping demo transcripts - no longer in demo mode`);
+      }
     }, 2000);
+
+    console.log(`🎯 [${new Date().toISOString()}] ===== DEMO MODE ACTIVATION COMPLETE ====`);
   }
 
   private startAudioLevelMonitoring(): void {
@@ -323,20 +552,50 @@ class RealtimeService {
   }
 
   private simulateAudioLevels(): void {
+    console.log(`📊 [${new Date().toISOString()}] Starting demo audio level simulation...`);
+    
+    // Clear any existing interval
+    if (this.demoAudioLevelInterval) {
+      console.log(`🧹 [${new Date().toISOString()}] Clearing existing demo audio level interval`);
+      clearInterval(this.demoAudioLevelInterval);
+      this.demoAudioLevelInterval = null;
+    }
+
     const simulateLevel = () => {
-      if (!this.isConnected) return;
+      if (!this.isDemoMode) {
+        console.log(`⏭️ [${new Date().toISOString()}] Stopping demo audio simulation - no longer in demo mode`);
+        if (this.demoAudioLevelInterval) {
+          clearInterval(this.demoAudioLevelInterval);
+          this.demoAudioLevelInterval = null;
+        }
+        return;
+      }
 
       // Simulate random audio levels for single mic
       const level = Math.random() * 30 + 10; // 10-40 range
       store.dispatch(setAudioLevel(level));
-
-      setTimeout(simulateLevel, 100);
     };
 
-    simulateLevel();
+    // Use setInterval instead of setTimeout for better control
+    this.demoAudioLevelInterval = setInterval(simulateLevel, 100);
+    console.log(`✅ [${new Date().toISOString()}] Demo audio level simulation started with interval ID:`, this.demoAudioLevelInterval);
   }
 
   private addDemoTranscripts(): void {
+    console.log(`📝 [${new Date().toISOString()}] ===== ADDING DEMO TRANSCRIPTS ====`);
+    console.log(`📊 Demo transcript details:`, {
+      isDemoMode: this.isDemoMode,
+      isConnected: this.isConnected,
+      activationCount: this.demoModeActivationCount,
+      currentTime: new Date().toISOString()
+    });
+
+    // Only add demo transcripts if still in demo mode
+    if (!this.isDemoMode) {
+      console.log(`⏭️ [${new Date().toISOString()}] Skipping demo transcripts - no longer in demo mode`);
+      return;
+    }
+
     const demoTranscripts = [
       {
         speaker: 'clinician' as const,
@@ -408,22 +667,64 @@ class RealtimeService {
       }
     ];
 
+    console.log(`📝 [${new Date().toISOString()}] Scheduling ${demoTranscripts.length} demo transcripts...`);
     demoTranscripts.forEach((transcript, index) => {
+      const delay = index * 2000;
+      console.log(`📝 [${new Date().toISOString()}] Scheduling demo transcript ${index + 1} in ${delay}ms:`, {
+        speaker: transcript.speaker,
+        lang: transcript.lang,
+        text: transcript.original_text.substring(0, 50) + '...'
+      });
+      
       setTimeout(() => {
-        this.handleTranscript(transcript);
-      }, index * 2000);
+        if (this.isDemoMode) {
+          console.log(`📝 [${new Date().toISOString()}] Adding demo transcript ${index + 1}:`, transcript.speaker);
+          this.handleTranscript(transcript);
+        } else {
+          console.log(`⏭️ [${new Date().toISOString()}] Skipping demo transcript ${index + 1} - no longer in demo mode`);
+        }
+      }, delay);
     });
+
+    console.log(`🎯 [${new Date().toISOString()}] ===== DEMO TRANSCRIPTS SCHEDULED ====`);
   }
 
   private sendSessionConfiguration(): void {
-    if (!this.textDataChannel || !this.config) return;
+    if (!this.config) return;
 
-    // Ensure text data channel is open before sending
-    if (this.textDataChannel.readyState !== 'open') {
-      console.log('Text data channel not ready, retrying in 100ms...');
+    // Create data channel dynamically if it doesn't exist
+    if (!this.audioDataChannel) {
+      console.log('📡 Creating data channel dynamically...');
+      this.setupSingleDataChannel();
+      
+      // Wait for the data channel to open before sending configuration
+      this.waitForDataChannelOpen().then(() => {
+        console.log('✅ Data channel ready, sending configuration...');
+        this.sendSessionConfigurationInternal();
+      }).catch((error) => {
+        console.error('❌ Failed to create data channel:', error);
+      });
+      return;
+    }
+
+    // Ensure data channel is open before sending
+    if (this.audioDataChannel.readyState !== 'open') {
+      console.log('Data channel not ready, retrying in 100ms...');
       setTimeout(() => this.sendSessionConfiguration(), 100);
       return;
     }
+
+    this.sendSessionConfigurationInternal();
+  }
+
+  private sendSessionConfigurationInternal(): void {
+    if (!this.audioDataChannel || this.audioDataChannel.readyState !== 'open') {
+      console.warn('Cannot send configuration - data channel not ready');
+      return;
+    }
+
+    console.log('📤 Sending session configuration...');
+    console.log('Data channel state:', this.audioDataChannel.readyState);
 
     // Single configuration that handles both audio and text
     const sessionConfig = {
@@ -467,9 +768,9 @@ Intent detection rules:
 - "repeat_last": Look for repetition requests, "otra vez", "repita"
 - Always preserve the original meaning and tone`,
         input_audio_transcription: { model: "whisper-1" },
-        temperature: 0.4,  // Balanced temperature for both text and audio
+        temperature: 0.6,  // Configurable temperature for response creativity
         turn_detection: { 
-          type: 'server_vad', 
+          type: 'server_vad', // Use server-side VAD for better reliability
           create_response: true,
           silence_threshold_ms: 3000, // 3 seconds of silence before processing
           speech_threshold_ms: 500    // 500ms of speech to start processing
@@ -478,9 +779,10 @@ Intent detection rules:
     };
 
     try {
-      // Send configuration to text channel (it will handle both modalities)
-      this.textDataChannel.send(JSON.stringify(sessionConfig));
+      // Send configuration to data channel
+      this.audioDataChannel.send(JSON.stringify(sessionConfig));
       console.log('✅ Session configuration sent for dual modalities');
+      console.log('Configuration payload:', JSON.stringify(sessionConfig, null, 2));
 
       // Verify the configuration was applied after a short delay
       setTimeout(() => {
@@ -496,7 +798,7 @@ Intent detection rules:
       const data = JSON.parse(event.data);
       console.log('🎵 Received audio channel message:', data);
 
-      // Audio channel handles only audio-specific events
+      // Audio channel handles audio-specific events
       switch (data.type) {
         case 'error': {
           const err = data.error || {};
@@ -530,13 +832,28 @@ Intent detection rules:
           this.handleAudioDone(data);
           break;
 
+        // Handle audio transcript events
+        case 'response.audio_transcript.delta':
+          this.handleAudioTranscriptDelta(data);
+          break;
+
+        case 'response.audio_transcript.done':
+          this.handleAudioTranscriptDone(data);
+          break;
+
+        // Handle session events (these can come to either channel)
+        case 'session.created':
+          console.log('🎵 Audio channel: Session created');
+          break;
+
         // Audio channel should not receive text events
         case 'conversation.item.input_audio_transcription.completed':
-        case 'response.audio_transcript.delta':
-        case 'response.audio_transcript.done':
         case 'response.content_part.added':
         case 'response.content_part.done':
-          console.warn('⚠️ Audio channel received text event:', data.type);
+        case 'conversation.item.created':
+        case 'session.updated':
+        case 'rate_limits.updated':
+          console.warn('⚠️ Audio channel received text event:', data.type, '- should be routed to text channel');
           break;
 
         default:
@@ -585,6 +902,22 @@ Intent detection rules:
           // Marks an output item finalized
           break;
 
+        case 'response.output_item.added':
+          this.handleOutputItemAdded(data);
+          break;
+
+        case 'response.audio_transcript.delta':
+          this.handleAudioTranscriptDelta(data);
+          break;
+
+        case 'response.audio_transcript.done':
+          this.handleAudioTranscriptDone(data);
+          break;
+
+        case 'response.done':
+          this.handleResponseDone(data);
+          break;
+
         // Handle conversation events
         case 'conversation.item.created':
           this.handleConversationItemCreated(data);
@@ -617,14 +950,16 @@ Intent detection rules:
           this.handleIntent(data);
           break;
 
-        // Text channel should not receive audio events
+        // Text channel should not receive audio events - these should go to audio channel
         case 'input_audio_buffer.speech_started':
         case 'input_audio_buffer.speech_stopped':
         case 'input_audio_buffer.committed':
         case 'output_audio_buffer.started':
         case 'output_audio_buffer.stopped':
         case 'response.audio.done':
-          console.warn('⚠️ Text channel received audio event:', data.type);
+        case 'response.audio_transcript.delta':
+        case 'response.audio_transcript.done':
+          console.warn('⚠️ Text channel received audio event:', data.type, '- should be routed to audio channel');
           break;
 
         default:
@@ -632,6 +967,55 @@ Intent detection rules:
       }
     } catch (error) {
       console.error('Error handling text channel message:', error);
+    }
+  }
+
+  private handleUnifiedMessage(event: MessageEvent): void {
+    try {
+      const data = JSON.parse(event.data);
+      console.log('📨 Received message:', data.type);
+
+      // Route messages based on their type to appropriate handlers
+      switch (data.type) {
+        case 'error': {
+          const err = data.error || {};
+          console.error('Realtime API error:', err.type, err.code, err.param, err.message);
+          return;
+        }
+
+        // Audio-related events
+        case 'input_audio_buffer.speech_started':
+        case 'input_audio_buffer.speech_stopped':
+        case 'input_audio_buffer.committed':
+        case 'output_audio_buffer.started':
+        case 'output_audio_buffer.stopped':
+        case 'response.audio.done':
+          this.handleAudioChannelMessage(event);
+          break;
+
+        // Text and transcription events
+        case 'conversation.item.input_audio_transcription.completed':
+        case 'conversation.item.input_audio_transcription.delta':
+        case 'response.created':
+        case 'response.content_part.added':
+        case 'response.content_part.done':
+        case 'response.output_item.done':
+        case 'conversation.item.created':
+        case 'session.created':
+        case 'session.updated':
+        case 'rate_limits.updated':
+        case 'transcript':
+        case 'intent':
+        case 'speaker_change':
+        case 'audio_level':
+          this.handleTextChannelMessage(event);
+          break;
+
+        default:
+          console.log('📨 Unknown message type:', data.type);
+      }
+    } catch (error) {
+      console.error('Error handling unified message:', error);
     }
   }
 
@@ -862,6 +1246,12 @@ Intent detection rules:
       isTranslation: false // This is original speech, not a translation
     });
 
+    // Ensure session configuration is sent (this will create data channel if needed)
+    if (!this.audioDataChannel || this.audioDataChannel.readyState !== 'open') {
+      console.log('📡 Ensuring session configuration is sent...');
+      this.sendSessionConfiguration();
+    }
+
     // Ask for a bilingual response (audio + JSON text)
     // If clinician spoke EN, target is patient; if patient spoke ES, target is clinician
     const target = (lang === 'en') ? 'patient' : 'clinician';
@@ -869,8 +1259,39 @@ Intent detection rules:
   }
 
   private requestBilingualResponseFor(itemId: string, target: 'patient' | 'clinician') {
-    if (!this.textDataChannel || this.textDataChannel.readyState !== 'open') return;
-  
+    if (!this.config) return;
+
+    // Create data channel dynamically if it doesn't exist
+    if (!this.audioDataChannel) {
+      console.log('📡 Creating data channel for bilingual response...');
+      this.setupSingleDataChannel();
+      
+      // Wait for the data channel to open before sending request
+      this.waitForDataChannelOpen().then(() => {
+        console.log('✅ Data channel ready, sending bilingual response request...');
+        this.sendBilingualResponseRequest(itemId, target);
+      }).catch((error) => {
+        console.error('❌ Failed to create data channel for bilingual response:', error);
+      });
+      return;
+    }
+
+    // Ensure data channel is open before sending
+    if (this.audioDataChannel.readyState !== 'open') {
+      console.log('Data channel not ready, retrying in 100ms...');
+      setTimeout(() => this.requestBilingualResponseFor(itemId, target), 100);
+      return;
+    }
+
+    this.sendBilingualResponseRequest(itemId, target);
+  }
+
+  private sendBilingualResponseRequest(itemId: string, target: 'patient' | 'clinician') {
+    if (!this.audioDataChannel || this.audioDataChannel.readyState !== 'open') {
+      console.warn('Cannot send bilingual response request - data channel not ready');
+      return;
+    }
+
     const original = target === 'patient' ? 'clinician' : 'patient';
     const targetLang = target === 'patient' ? 'es' : 'en';
   
@@ -909,12 +1330,12 @@ Rules:
           }
         ],
         instructions: "Provide JSON metadata and speak the translation. Handle both text and audio output.",
-        temperature: 0.4
+        temperature: 0.6  // Configurable temperature for response creativity
       }
     };
 
     try {
-      this.textDataChannel.send(JSON.stringify(request));
+      this.audioDataChannel.send(JSON.stringify(request));
       console.log('📝 Bilingual response request sent for both text and audio');
     } catch (error) {
       console.error('Error sending bilingual response request:', error);
@@ -947,6 +1368,38 @@ Rules:
     }
   }
 
+  private handleOutputItemAdded(data: any): void {
+    console.log('Output item added:', data);
+    // This message indicates a new output item has been added to the conversation.
+    // It might contain a new JSON metadata object or a new spoken text.
+    // We need to process it to update the lastJsonTranslationAt and potentially add a new transcript.
+
+    const item = data.item;
+    if (!item) {
+      console.warn('Output item added message missing item:', data);
+      return;
+    }
+
+    if (item.type === 'output_text') {
+      const raw: string = item.text ?? item.value ?? item.content ?? '';
+      if (raw) {
+        this.tryParseTranslationJson(raw);
+        // If it's a new JSON metadata, update lastJsonTranslationAt
+        if (this.lastJsonTranslationAt === 0) {
+          this.lastJsonTranslationAt = Date.now();
+        }
+      }
+    } else if (item.type === 'output_audio_buffer') {
+      // This is a new spoken audio buffer. We don't parse JSON from it directly,
+      // but we need to update lastJsonTranslationAt if it's a new JSON metadata.
+      // This is a bit complex because the audio buffer itself doesn't contain JSON.
+      // The JSON is embedded in the response.audio_transcript.delta/done messages.
+      // So, we rely on the audio transcript delta/done messages to update lastJsonTranslationAt.
+      // For now, we'll just log it.
+      console.log('Output audio buffer added:', item);
+    }
+  }
+
   private handleAudioTranscriptDelta(data: any): void {
     console.log('Audio transcript delta:', data);
 
@@ -973,6 +1426,13 @@ Rules:
     const text = raw.trim();
   
     if (!text) return;
+  
+    // Skip processing if this is an audio transcript (to prevent voice overlap)
+    if (payload.type === 'response.audio_transcript.done' || 
+        payload.type === 'response.audio_transcript.delta') {
+      console.log('🎵 Skipping audio transcript processing to prevent voice overlap');
+      return;
+    }
   
     // 1) Try to extract a leading JSON object, then the remainder (spoken text)
     const { obj, remainder } = this.extractLeadingJson(text);
@@ -1082,13 +1542,32 @@ Rules:
   }
 
   async disconnect(): Promise<void> {
+    console.log(`🔌 [${new Date().toISOString()}] ===== DISCONNECTING REALTIME SERVICE ====`);
+    console.log(`📊 Disconnect details:`, {
+      isConnected: this.isConnected,
+      isDemoMode: this.isDemoMode,
+      demoModeActivationCount: this.demoModeActivationCount,
+      hasPeerConnection: !!this.peerConnection,
+      hasMediaStream: !!this.mediaStream,
+      hasAudioChannel: !!this.audioDataChannel,
+      hasTextChannel: !!this.textDataChannel,
+      hasAudioElement: !!this.audioElement,
+      connectionAttemptCount: this.connectionAttemptCount
+    });
+
     try {
-      console.log('Disconnecting real-time service...');
+      // Stop demo audio level simulation if active
+      if (this.demoAudioLevelInterval) {
+        console.log(`⏹️ [${new Date().toISOString()}] Stopping demo audio level simulation...`);
+        clearInterval(this.demoAudioLevelInterval);
+        this.demoAudioLevelInterval = null;
+      }
 
       // Stop all media tracks
       if (this.mediaStream) {
+        console.log(`🎤 [${new Date().toISOString()}] Stopping media tracks...`);
         this.mediaStream.getTracks().forEach(track => {
-          console.log('Stopping track:', track.kind, track.id);
+          console.log(`⏹️ [${new Date().toISOString()}] Stopping track:`, track.kind, track.id);
           track.stop();
         });
         this.mediaStream = null;
@@ -1096,43 +1575,54 @@ Rules:
 
       // Close data channels
       if (this.audioDataChannel) {
-        console.log('Closing audio data channel...');
+        console.log(`📡 [${new Date().toISOString()}] Closing audio data channel...`);
         this.audioDataChannel.close();
         this.audioDataChannel = null;
       }
       if (this.textDataChannel) {
-        console.log('Closing text data channel...');
+        console.log(`📡 [${new Date().toISOString()}] Closing text data channel...`);
         this.textDataChannel.close();
         this.textDataChannel = null;
       }
 
       // Close peer connection
       if (this.peerConnection) {
-        console.log('Closing peer connection...');
+        console.log(`🔗 [${new Date().toISOString()}] Closing peer connection...`);
         this.peerConnection.close();
         this.peerConnection = null;
       }
 
       // Remove audio element
       if (this.audioElement) {
-        console.log('Removing audio element...');
+        console.log(`🔊 [${new Date().toISOString()}] Removing audio element...`);
         this.audioElement.remove();
         this.audioElement = null;
       }
 
       // Reset state
+      console.log(`🔄 [${new Date().toISOString()}] Resetting service state...`);
       this.isConnected = false;
+      this.isDemoMode = false; // Ensure demo mode is off
+      this.demoModeActivationCount = 0;
+      this.demoModeActivationStack = [];
       this.config = null;
+      this.lastConnectionState = 'none';
+      this.lastIceConnectionState = 'none';
 
       // Update Redux state
       store.dispatch(setConnectionStatus(false));
       store.dispatch(setAudioLevel(0));
       store.dispatch(setError(null));
 
-      console.log('Real-time service disconnected successfully');
+      console.log(`✅ [${new Date().toISOString()}] Real-time service disconnected successfully`);
+      console.log(`🎯 [${new Date().toISOString()}] ===== DISCONNECT COMPLETE ====`);
 
     } catch (error) {
-      console.error('Error disconnecting:', error);
+      console.error(`❌ [${new Date().toISOString()}] Error disconnecting:`, error);
+      console.error(`📊 Error details:`, {
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : 'No stack trace'
+      });
     }
   }
 
@@ -1140,20 +1630,25 @@ Rules:
     return this.isConnected;
   }
 
+  // NEW: Method to check if service is currently initializing
+  isServiceInitializing(): boolean {
+    return this.isInitializing;
+  }
+
   // Method to verify session configuration was applied
   private verifySessionConfiguration(): void {
-    if (!this.textDataChannel || this.textDataChannel.readyState !== 'open') {
-      console.warn('Cannot verify session configuration - text data channel not ready');
+    if (!this.audioDataChannel || this.audioDataChannel.readyState !== 'open') {
+      console.warn('Cannot verify session configuration - data channel not ready');
       return;
     }
 
     try {
-      this.textDataChannel.send(JSON.stringify({
+      this.audioDataChannel.send(JSON.stringify({
         type: 'conversation.item.create',
         item: { type: 'message', role: 'user',
                 content: [{ type: 'input_text', text: 'ping' }] }
       }));
-      this.textDataChannel.send(JSON.stringify({ type: 'response.create' }));
+      this.audioDataChannel.send(JSON.stringify({ type: 'response.create' }));
       console.log('Verification message sent to test translator role');
     } catch (error) {
       console.error('Error sending verification message:', error);
@@ -1162,7 +1657,10 @@ Rules:
 
   // Method to manually trigger repeat functionality
   async repeatLast(): Promise<void> {
-    if (!this.textDataChannel) return;
+    if (!this.audioDataChannel) {
+      console.warn('Data channel not available for repeat');
+      return;
+    }
 
     const repeatMessage = {
       type: 'message',
@@ -1170,13 +1668,13 @@ Rules:
       content: 'repeat_last',
     };
 
-    this.textDataChannel.send(JSON.stringify(repeatMessage));
+    this.audioDataChannel.send(JSON.stringify(repeatMessage));
   }
 
   // Method to test the connection by sending a test message
   async testConnection(): Promise<void> {
-    if (!this.textDataChannel || this.textDataChannel.readyState !== 'open') {
-      console.warn('Text data channel not ready for testing');
+    if (!this.audioDataChannel || this.audioDataChannel.readyState !== 'open') {
+      console.warn('Data channel not ready for testing');
       return;
     }
 
@@ -1187,7 +1685,7 @@ Rules:
     };
 
     try {
-      this.textDataChannel.send(JSON.stringify(testMessage));
+      this.audioDataChannel.send(JSON.stringify(testMessage));
       console.log('Test message sent successfully');
     } catch (error) {
       console.error('Error sending test message:', error);
@@ -1233,8 +1731,8 @@ Rules:
 
   // Method to test the translator functionality
   async testTranslator(): Promise<void> {
-    if (!this.textDataChannel || this.textDataChannel.readyState !== 'open') {
-      console.warn('Cannot test translator - text data channel not ready');
+    if (!this.audioDataChannel || this.audioDataChannel.readyState !== 'open') {
+      console.warn('Cannot test translator - data channel not ready');
       return;
     }
 
@@ -1248,20 +1746,20 @@ Rules:
     };
 
     try {
-      this.textDataChannel.send(JSON.stringify(spanishTestMessage));
-      console.log('✅ Spanish test message sent to text channel');
+      this.audioDataChannel.send(JSON.stringify(spanishTestMessage));
+      console.log('✅ Spanish test message sent to data channel');
 
       // Wait a bit then test English to Spanish
       setTimeout(() => {
-        if (this.textDataChannel && this.textDataChannel.readyState === 'open') { 
+        if (this.audioDataChannel && this.audioDataChannel.readyState === 'open') {
           const englishTestMessage = {
             type: 'message',
             role: 'user',
             content: 'How long have you had these symptoms?'
           };
 
-          this.textDataChannel.send(JSON.stringify(englishTestMessage));
-          console.log('✅ English test message sent to text channel');
+          this.audioDataChannel.send(JSON.stringify(englishTestMessage));
+          console.log('✅ English test message sent to data channel');
         }
       }, 2000);
 
@@ -1273,17 +1771,54 @@ Rules:
   // Method to get connection status
   getConnectionStatus(): {
     isConnected: boolean;
-    audioDataChannelState: string;
-    textDataChannelState: string;
+    dataChannelState: string;
     peerConnectionState: string;
     iceConnectionState: string;
   } {
     return {
       isConnected: this.isConnected,
-      audioDataChannelState: this.audioDataChannel?.readyState || 'none',
-      textDataChannelState: this.textDataChannel?.readyState || 'none',
+      dataChannelState: this.audioDataChannel?.readyState || 'none',
       peerConnectionState: this.peerConnection?.connectionState || 'none',
       iceConnectionState: this.peerConnection?.iceConnectionState || 'none',
+    };
+  }
+
+  // NEW: Method to get comprehensive service state for debugging
+  getServiceState(): {
+    isConnected: boolean;
+    isDemoMode: boolean;
+    demoModeActivationCount: number;
+    demoModeActivationStack: string[];
+    connectionAttemptCount: number;
+    lastConnectionState: string;
+    lastIceConnectionState: string;
+    hasPeerConnection: boolean;
+    hasMediaStream: boolean;
+    hasAudioChannel: boolean;
+    hasTextChannel: boolean;
+    hasAudioElement: boolean;
+    hasDemoAudioInterval: boolean;
+    isInitializing: boolean;
+    hasInitializationPromise: boolean;
+    config: RealtimeConfig | null;
+  } {
+    return {
+      isConnected: this.isConnected,
+      isDemoMode: this.isDemoMode,
+      demoModeActivationCount: this.demoModeActivationCount,
+      demoModeActivationStack: [...this.demoModeActivationStack],
+      connectionAttemptCount: this.connectionAttemptCount,
+      lastConnectionState: this.lastConnectionState,
+      lastIceConnectionState: this.lastIceConnectionState,
+      hasPeerConnection: !!this.peerConnection,
+      hasMediaStream: !!this.mediaStream,
+      hasAudioChannel: !!this.audioDataChannel,
+      hasTextChannel: !!this.textDataChannel,
+      hasAudioElement: !!this.audioElement,
+      hasDemoAudioInterval: !!this.demoAudioLevelInterval,
+      isInitializing: this.isInitializing,
+      hasInitializationPromise: !!this.initializationPromise,
+      config: this.config
     };
   }
 
@@ -1304,11 +1839,135 @@ Rules:
     }
   }
 
+  // NEW: Method to force exit demo mode for testing
+  forceExitDemoMode(): void {
+    console.log(`🔧 [${new Date().toISOString()}] ===== FORCE EXITING DEMO MODE ====`);
+    console.log(`📊 Force exit details:`, {
+      wasDemoMode: this.isDemoMode,
+      activationCount: this.demoModeActivationCount,
+      activationStack: this.demoModeActivationStack,
+      isConnected: this.isConnected
+    });
+
+    if (this.isDemoMode) {
+      this.exitDemoMode();
+      console.log(`✅ [${new Date().toISOString()}] Demo mode force exited successfully`);
+    } else {
+      console.log(`ℹ️ [${new Date().toISOString()}] Not in demo mode, nothing to force exit`);
+    }
+  }
+
   // Method to get mute status
   isMuted(): boolean {
     if (!this.mediaStream) return false;
     const audioTracks = this.mediaStream.getAudioTracks();
     return audioTracks.length > 0 ? !audioTracks[0].enabled : false;
+  }
+
+  // Method to enable audio output (handle autoplay restrictions)
+  enableAudio(): void {
+    if (this.audioElement) {
+      this.audioElement.play().catch((error) => {
+        console.warn('Failed to enable audio:', error);
+      });
+    }
+  }
+
+  // NEW: Method to exit demo mode
+  private exitDemoMode(): void {
+    console.log(`🔄 [${new Date().toISOString()}] ===== EXITING DEMO MODE ====`);
+    console.log(`📊 Demo mode exit details:`, {
+      wasDemoMode: this.isDemoMode,
+      activationCount: this.demoModeActivationCount,
+      activationStack: this.demoModeActivationStack,
+      isConnected: this.isConnected,
+      peerConnectionState: this.peerConnection?.connectionState
+    });
+
+    if (!this.isDemoMode) {
+      console.log(`ℹ️ [${new Date().toISOString()}] Not in demo mode, nothing to exit`);
+      return;
+    }
+
+    // Stop demo audio level simulation
+    if (this.demoAudioLevelInterval) {
+      clearInterval(this.demoAudioLevelInterval);
+      this.demoAudioLevelInterval = null;
+      console.log(`⏹️ [${new Date().toISOString()}] Stopped demo audio level simulation`);
+    }
+
+    // Reset demo mode state
+    this.isDemoMode = false;
+    this.demoModeActivationCount = 0;
+    this.demoModeActivationStack = [];
+
+    // Update store to reflect live connection
+    store.dispatch(setConnectionStatus(true));
+    store.dispatch(setError(null));
+
+    // Notify user about transition to live mode
+    store.dispatch(addNotification({
+      type: 'success',
+      message: 'Demo mode exited - live voice translation is now active!'
+    }));
+
+    console.log(`✅ [${new Date().toISOString()}] Demo mode exited successfully`);
+    console.log(`🎯 [${new Date().toISOString()}] ===== DEMO MODE EXIT COMPLETE ====`);
+  }
+
+  // NEW: Track demo audio level interval
+  private demoAudioLevelInterval: NodeJS.Timeout | null = null;
+
+  // NEW: Method to wait for ICE gathering to complete
+  private async waitForIceGatheringComplete(pc: RTCPeerConnection): Promise<void> {
+    if (pc.iceGatheringState === 'complete') return;
+    
+    await new Promise<void>((resolve) => {
+      const check = () => {
+        if (!pc) return resolve();
+        if (pc.iceGatheringState === 'complete') {
+          pc.removeEventListener('icegatheringstatechange', check);
+          resolve();
+        }
+      };
+      pc.addEventListener('icegatheringstatechange', check);
+      // Safety timeout after 5s in case some networks don't produce candidates
+      setTimeout(() => {
+        pc.removeEventListener('icegatheringstatechange', check);
+        resolve();
+      }, 5000);
+    });
+  }
+
+
+
+  // NEW: Method to log current state for debugging
+  logCurrentState(): void {
+    console.log(`🔍 [${new Date().toISOString()}] ===== CURRENT SERVICE STATE LOG ====`);
+    const serviceState = this.getServiceState();
+    const connectionStatus = this.getConnectionStatus();
+    
+    console.log('📊 Service State:', serviceState);
+    console.log('🔗 Connection Status:', connectionStatus);
+    console.log('🎯 Demo Mode Details:', {
+      isDemoMode: serviceState.isDemoMode,
+      activationCount: serviceState.demoModeActivationCount,
+      activationStack: serviceState.demoModeActivationStack
+    });
+    console.log('📡 Data Channels:', {
+      audioChannel: this.audioDataChannel?.readyState || 'none',
+      textChannel: this.textDataChannel?.readyState || 'none'
+    });
+    console.log('🎤 Media Stream:', {
+      hasStream: !!this.mediaStream,
+      trackCount: this.mediaStream?.getTracks().length || 0,
+      audioTracks: this.mediaStream?.getAudioTracks().map(t => ({ id: t.id, enabled: t.enabled })) || []
+    });
+    console.log('🔊 Audio Element:', {
+      hasElement: !!this.audioElement,
+      srcObject: !!this.audioElement?.srcObject
+    });
+    console.log(`🎯 [${new Date().toISOString()}] ===== END STATE LOG ====`);
   }
 }
 

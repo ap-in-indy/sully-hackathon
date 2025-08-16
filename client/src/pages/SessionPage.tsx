@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useSelector, useDispatch } from 'react-redux';
 import { RootState } from '../store';
@@ -21,6 +21,8 @@ const SessionPage: React.FC = () => {
   const ui = useSelector((state: RootState) => state.ui);
 
   const [isInitializing, setIsInitializing] = useState(true);
+  const [showEnableAudio, setShowEnableAudio] = useState(false);
+  const didInit = useRef(false);
 
   const initializeSession = useCallback(async () => {
     try {
@@ -39,6 +41,11 @@ const SessionPage: React.FC = () => {
 
       // Initialize real-time voice communication
       await realtimeService.initialize(mockSession);
+
+      // Check if we need to show the enable audio button
+      if (realtimeService.isConnectedToService()) {
+        setShowEnableAudio(true);
+      }
 
       dispatch(addNotification({
         type: 'success',
@@ -64,6 +71,10 @@ const SessionPage: React.FC = () => {
       return;
     }
 
+    // Prevent duplicate initialization in React 18 Strict Mode
+    if (didInit.current) return;
+    didInit.current = true;
+    
     initializeSession();
   }, [encounterId, navigate, initializeSession]);
 
@@ -152,8 +163,7 @@ const SessionPage: React.FC = () => {
           <div className="connection-info">
             <p><strong>Connected:</strong> {session.isConnected ? '✅ Yes' : '❌ No'}</p>
             <p><strong>Audio Level:</strong> {Math.round(audio.audioLevel)}%</p>
-            <p><strong>Audio Channel:</strong> {realtimeService.getConnectionStatus().audioDataChannelState}</p>
-            <p><strong>Text Channel:</strong> {realtimeService.getConnectionStatus().textDataChannelState}</p>
+            <p><strong>Data Channel:</strong> {realtimeService.getConnectionStatus().dataChannelState}</p>
           </div>
           
           <div className="connection-actions">
@@ -164,7 +174,7 @@ const SessionPage: React.FC = () => {
                 console.log('Connection Status:', status);
                 dispatch(addNotification({
                   type: 'info',
-                  message: `Audio: ${status.audioDataChannelState}, Text: ${status.textDataChannelState}, Peer: ${status.peerConnectionState}, ICE: ${status.iceConnectionState}`
+                  message: `Data Channel: ${status.dataChannelState}, Peer: ${status.peerConnectionState}, ICE: ${status.iceConnectionState}`
                 }));
               }}
             >
@@ -188,6 +198,34 @@ const SessionPage: React.FC = () => {
             </button>
 
             <button 
+              className="btn btn-warning btn-sm"
+              onClick={() => realtimeService.forceExitDemoMode()}
+            >
+              🚫 Force Exit Demo Mode
+            </button>
+
+            <button 
+              className="btn btn-info btn-sm"
+              onClick={() => realtimeService.logCurrentState()}
+            >
+              📊 Log Current State
+            </button>
+
+            <button 
+              className="btn btn-secondary btn-sm"
+              onClick={() => {
+                const isInitializing = realtimeService.isServiceInitializing();
+                const isConnected = realtimeService.isConnectedToService();
+                dispatch(addNotification({
+                  type: 'info',
+                  message: `Service Status: Initializing=${isInitializing}, Connected=${isConnected}`
+                }));
+              }}
+            >
+              🔍 Check Service Status
+            </button>
+
+            <button 
               className={`btn btn-sm ${realtimeService.isMuted() ? 'btn-danger' : 'btn-secondary'}`}
               onClick={() => realtimeService.toggleMute()}
               disabled={!session.isConnected}
@@ -199,17 +237,37 @@ const SessionPage: React.FC = () => {
               className="btn btn-outline btn-sm"
               onClick={() => {
                 console.log('Current session state:', session);
+                const serviceState = realtimeService.getServiceState();
+                console.log('=== COMPREHENSIVE SERVICE STATE ===');
+                console.log('Service State:', serviceState);
+                console.log('Connection Status:', realtimeService.getConnectionStatus());
+                console.log('=== END SERVICE STATE ===');
                 dispatch(addNotification({
                   type: 'info',
-                  message: 'Session state logged to console'
+                  message: `Service State: Demo=${serviceState.isDemoMode}, Connected=${serviceState.isConnected}, Attempts=${serviceState.connectionAttemptCount}`
                 }));
               }}
             >
-              Debug Session
+              Debug Service State
             </button>
           </div>
         </div>
       </div>
+
+      {showEnableAudio && (
+        <div className="enable-audio-banner">
+          <p>🔊 Audio output is ready. Click to enable:</p>
+          <button 
+            className="btn btn-primary"
+            onClick={() => {
+              realtimeService.enableAudio();
+              setShowEnableAudio(false);
+            }}
+          >
+            Enable Audio Output
+          </button>
+        </div>
+      )}
 
       {audio.error && (
         <div className="error-banner">

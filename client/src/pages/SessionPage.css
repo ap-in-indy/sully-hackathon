@@ -186,6 +186,23 @@
   width: 100%;
 }
 
+.enable-audio-banner {
+  position: fixed;
+  bottom: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--info-color, #0369a1);
+  color: white;
+  padding: 1rem 1.5rem;
+  border-radius: 0.5rem;
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  z-index: 1000;
+  max-width: 500px;
+}
+
 .error-banner {
   position: fixed;
   bottom: 1rem;
@@ -244,6 +261,7 @@
     margin: 0.5rem;
   }
   
+  .enable-audio-banner,
   .error-banner {
     left: 0.5rem;
     right: 0.5rem;
