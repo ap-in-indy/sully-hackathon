@@ -183,10 +183,12 @@ const SessionPage: React.FC = () => {
               className="btn btn-outline btn-sm"
               onClick={() => {
                 const status = realtimeService.getConnectionStatus();
+                const details = realtimeService.getConnectionDetails();
                 console.log('Connection Status:', status);
+                console.log('Connection Details:', details);
                 dispatch(addNotification({
                   type: 'info',
-                  message: `Connection: ${status.dataChannelState}, Peer: ${status.peerConnectionState}, ICE: ${status.iceConnectionState}`
+                  message: `Status: ${status.dataChannelState}, Peer: ${status.peerConnectionState}, ICE: ${status.iceConnectionState}`
                 }));
               }}
               disabled={!session.isConnected}
@@ -205,14 +207,16 @@ const SessionPage: React.FC = () => {
             <button 
               className="btn btn-outline btn-sm"
               onClick={() => {
+                const details = realtimeService.getConnectionDetails();
                 console.log('Current session state:', session);
+                console.log('Connection details:', details);
                 dispatch(addNotification({
                   type: 'info',
-                  message: 'Session state logged to console'
+                  message: `Initialized: ${details.isInitialized}, Media: ${details.hasMediaStream}, Audio: ${details.hasAudioElement}`
                 }));
               }}
             >
-              Debug Session
+              Debug Connection
             </button>
           </div>
         </div>
