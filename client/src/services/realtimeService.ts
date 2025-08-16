@@ -14,6 +14,7 @@ export interface RealtimeConfig {
   encounterId: string;
   patientId: string;
   clinicianId: string;
+  strictTranslatorMode?: boolean; // Enable strict translator mode (default: true)
 }
 
 class RealtimeService {
@@ -726,12 +727,43 @@ class RealtimeService {
     console.log('📤 Sending session configuration...');
     console.log('Data channel state:', this.audioDataChannel.readyState);
 
-    // Single configuration that handles both audio and text
+    // Configuration based on strict translator mode setting
+    const useStrictMode = this.config?.strictTranslatorMode !== false; // Default to true
+    
     const sessionConfig = {
       type: "session.update",
       session: {
         modalities: ["text", "audio"], // Both modalities
-        instructions: `
+        instructions: useStrictMode ? `
+Act ONLY as a strict EN↔ES medical translator (simultaneous interpreter).
+
+Hard rules:
+
+Translate ONLY the last speaker's utterance into the other language.
+Do NOT answer questions, offer advice, add clarifications, prefaces, greetings, or summaries.
+Preserve meaning, register, medical terms, numbers, and units exactly.
+If the input is fragmented, translate literally without adding content.
+AUDIO: speak only the translated sentence(s), nothing else.
+TEXT: output exactly one JSON object with the schema below (no extra text):
+{
+  "language": "en|es",
+  "translation": "translated text",
+  "original_speaker": "clinician|patient",
+  "target_speaker": "clinician|patient",
+  "intents": [
+    {
+      "type": "schedule_follow_up|send_lab_order|repeat_last|other",
+      "confidence": 0.0-1.0,
+      "details": "short context"
+    }
+  ]
+}
+
+Intent detection rules:
+- "schedule_follow_up": Look for appointment requests, follow-up needs, scheduling
+- "send_lab_order": Look for lab tests, blood work, diagnostic orders
+- "repeat_last": Look for repetition requests, "otra vez", "repita"
+- Always preserve the original meaning and tone` : `
 You are a medical interpreter and intent detector. Your role is to:
 
 1. TRANSCRIBE: Convert speech to text accurately
@@ -768,13 +800,16 @@ Intent detection rules:
 - "repeat_last": Look for repetition requests, "otra vez", "repita"
 - Always preserve the original meaning and tone`,
         input_audio_transcription: { model: "whisper-1" },
-        temperature: 0.6,  // Configurable temperature for response creativity
+        temperature: 0.6,              // Realtime min; lower values are rejected.
+        top_p: useStrictMode ? 0.15 : 0.8, // Tighter control in strict mode
+        max_response_output_tokens: useStrictMode ? 512 : 1024, // Stricter cap in strict mode
         turn_detection: { 
           type: 'server_vad', // Use server-side VAD for better reliability
           create_response: true,
           silence_threshold_ms: 3000, // 3 seconds of silence before processing
           speech_threshold_ms: 500    // 500ms of speech to start processing
         },
+        tool_choice: useStrictMode ? "none" : undefined // Prevent tool calling only in strict mode
       }
     };
 
@@ -1019,17 +1054,32 @@ Intent detection rules:
     }
   }
 
-  private tryParseTranslationJson(raw: string): void {
+  private tryParseTranslationJson(raw: string): boolean {
     try {
       const obj = JSON.parse(raw);
+      
+      // Strict validation: require all essential fields
       if (
         obj &&
         (obj.language === 'en' || obj.language === 'es') &&
         typeof obj.translation === 'string' &&
         (obj.original_speaker === 'clinician' || obj.original_speaker === 'patient') &&
-        (obj.target_speaker === 'clinician' || obj.target_speaker === 'patient')
+        (obj.target_speaker === 'clinician' || obj.target_speaker === 'patient') &&
+        obj.translation.trim().length > 0 // Ensure translation is not empty
       ) {
         const lang = obj.language as 'en' | 'es';
+        
+        // Additional guardrail: check if this looks like an answer to a question
+        const translation = obj.translation.toLowerCase();
+        const isAnswerLike = translation.includes('yes') || translation.includes('no') || 
+                           translation.includes('sí') || translation.includes('no') ||
+                           translation.startsWith('because') || translation.startsWith('porque') ||
+                           translation.includes('i think') || translation.includes('creo que');
+        
+        if (isAnswerLike) {
+          console.log('⚠️ Rejected JSON that looks like an answer:', obj.translation);
+          return false;
+        }
         
         // Handle the transcript
         this.handleTranscript({
@@ -1058,16 +1108,26 @@ Intent detection rules:
 
         this.lastJsonTranslationAt = Date.now();
         console.log('✅ Parsed translation JSON with intents:', obj);
+        return true;
       } else {
         console.log('⚠️ Parsed JSON missing required fields:', obj);
+        return false;
       }
     } catch (error) {
       console.log('⚠️ Failed to parse JSON:', raw.substring(0, 100));
+      return false;
     }
   }
 
   private handleSpeechStarted(data: any): void {
     console.log('Speech started:', data);
+    
+    // In strict translator mode, cancel any ongoing AI response when user starts speaking
+    // This prevents the AI from continuing to talk over the user
+    if (this.isConnected && !this.isDemoMode) {
+      this.cancelOngoingResponse();
+    }
+    
     // Could be used to show "listening" indicator
   }
 
@@ -1295,11 +1355,48 @@ Intent detection rules:
     const original = target === 'patient' ? 'clinician' : 'patient';
     const targetLang = target === 'patient' ? 'es' : 'en';
   
-    // Single request that handles both text and audio
+    // Configuration based on strict translator mode setting
+    const useStrictMode = this.config?.strictTranslatorMode !== false; // Default to true
+    
+    // Strict translator request with JSON schema enforcement
     const request = {
       type: "response.create",
       response: {
         modalities: ["text", "audio"], // Both modalities
+        // Enforce JSON-first text output in strict mode:
+        ...(useStrictMode && {
+          response_format: {
+            type: "json_schema",
+            json_schema: {
+              name: "TranslationMetadata",
+              strict: true,
+              schema: {
+                type: "object",
+                additionalProperties: false,
+                required: ["language", "translation", "original_speaker", "target_speaker"],
+                properties: {
+                  language: { type: "string", enum: ["en", "es"] },
+                  translation: { type: "string" },
+                  original_speaker: { type: "string", enum: ["clinician", "patient"] },
+                  target_speaker: { type: "string", enum: ["clinician", "patient"] },
+                  intents: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      additionalProperties: false,
+                      required: ["type", "confidence"],
+                      properties: {
+                        type: { type: "string", enum: ["schedule_follow_up", "send_lab_order", "repeat_last", "other"] },
+                        confidence: { type: "number", minimum: 0, maximum: 1 },
+                        details: { type: "string" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }),
         input: [
           // 1) Reference the spoken utterance
           { type: "item_reference", id: itemId },
@@ -1310,8 +1407,15 @@ Intent detection rules:
             content: [
               {
                 type: "input_text",
-                text: `
-Translate the referenced utterance to ${targetLang} and provide:
+                text: useStrictMode ? `Translate the referenced utterance to ${targetLang} ONLY.
+
+Strict rules:
+
+Do not answer questions or add clarifications.
+Preserve meaning, register, medical terms, numbers, units.
+AUDIO: speak only the translation, no pre/post text.
+TEXT: output exactly one JSON object per the provided schema.
+Set original_speaker="${original}" and target_speaker="${target}".` : `Translate the referenced utterance to ${targetLang} and provide:
 
 1. JSON metadata with translation and intent detection
 2. Spoken audio output of the translation
@@ -1329,8 +1433,11 @@ Rules:
             ]
           }
         ],
-        instructions: "Provide JSON metadata and speak the translation. Handle both text and audio output.",
-        temperature: 0.6  // Configurable temperature for response creativity
+        instructions: useStrictMode ? "Strict translator mode: output exactly one JSON object and the spoken translation." : "Provide JSON metadata and speak the translation. Handle both text and audio output.",
+        temperature: 0.6,              // Mirror the session values so drift can't sneak in
+        top_p: useStrictMode ? 0.15 : 0.8, // Same top_p as session for consistency
+        max_output_tokens: useStrictMode ? 256 : 512, // Cap verbosity per response
+        tool_choice: useStrictMode ? "none" : undefined // Prevent tool calling only in strict mode
       }
     };
 
@@ -1352,7 +1459,13 @@ Rules:
     if (p) {
       if (p.type === 'text' || p.type === 'output_text') {
         const raw: string = p.text ?? p.value ?? p.content ?? '';
-        if (raw) this.tryParseTranslationJson(raw);
+        if (raw) {
+          const parsed = this.tryParseTranslationJson(raw);
+          if (parsed) {
+            console.log('✅ Successfully parsed content part JSON');
+            return; // Exit early if we successfully parsed JSON
+          }
+        }
       }
       // If it's audio we just ignore here; captions come via response.audio_transcript.*
       return;
@@ -1363,9 +1476,18 @@ Rules:
     for (const part of parts) {
       if (part.type === 'text' || part.type === 'output_text') {
         const raw: string = part.text ?? part.value ?? part.content ?? '';
-        if (raw) this.tryParseTranslationJson(raw);
+        if (raw) {
+          const parsed = this.tryParseTranslationJson(raw);
+          if (parsed) {
+            console.log('✅ Successfully parsed fallback content part JSON');
+            return; // Exit early if we successfully parsed JSON
+          }
+        }
       }
     }
+    
+    // If we get here, no valid JSON was parsed
+    console.log('⚠️ No valid translation JSON found in content parts');
   }
 
   private handleOutputItemAdded(data: any): void {
@@ -1383,10 +1505,13 @@ Rules:
     if (item.type === 'output_text') {
       const raw: string = item.text ?? item.value ?? item.content ?? '';
       if (raw) {
-        this.tryParseTranslationJson(raw);
-        // If it's a new JSON metadata, update lastJsonTranslationAt
-        if (this.lastJsonTranslationAt === 0) {
-          this.lastJsonTranslationAt = Date.now();
+        const parsed = this.tryParseTranslationJson(raw);
+        if (parsed) {
+          // If it's a new JSON metadata, update lastJsonTranslationAt
+          if (this.lastJsonTranslationAt === 0) {
+            this.lastJsonTranslationAt = Date.now();
+          }
+          console.log('✅ Successfully parsed output item JSON');
         }
       }
     } else if (item.type === 'output_audio_buffer') {
@@ -1781,6 +1906,48 @@ Rules:
       peerConnectionState: this.peerConnection?.connectionState || 'none',
       iceConnectionState: this.peerConnection?.iceConnectionState || 'none',
     };
+  }
+
+  // Method to cancel ongoing AI response (useful for strict translator mode)
+  private cancelOngoingResponse(): void {
+    if (!this.audioDataChannel || this.audioDataChannel.readyState !== 'open') {
+      return;
+    }
+
+    try {
+      const cancelMessage = {
+        type: 'response.cancel'
+      };
+      this.audioDataChannel.send(JSON.stringify(cancelMessage));
+      console.log('🛑 Cancelled ongoing AI response due to user speech');
+    } catch (error) {
+      console.error('Error cancelling response:', error);
+    }
+  }
+
+  // Method to reconnect with new configuration (useful for changing strict mode)
+  async reconnectWithNewConfig(): Promise<void> {
+    if (!this.config) {
+      console.warn('Cannot reconnect - no configuration available');
+      return;
+    }
+
+    console.log('🔄 Reconnecting with new configuration...');
+    console.log('📊 New config:', {
+      strictTranslatorMode: this.config.strictTranslatorMode,
+      encounterId: this.config.encounterId,
+      patientId: this.config.patientId,
+      clinicianId: this.config.clinicianId
+    });
+
+    // Disconnect current session
+    await this.disconnect();
+    
+    // Wait a moment for cleanup
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // Reinitialize with new config
+    await this.initialize(this.config);
   }
 
   // NEW: Method to get comprehensive service state for debugging

@@ -35,6 +35,7 @@ const SessionPage: React.FC = () => {
         encounterId: encounterId!,
         patientId: 'patient-1',
         clinicianId: 'clinician-1',
+        strictTranslatorMode: true, // Enable strict translator mode by default
       };
 
       dispatch(startSession(mockSession));
@@ -164,6 +165,7 @@ const SessionPage: React.FC = () => {
             <p><strong>Connected:</strong> {session.isConnected ? '✅ Yes' : '❌ No'}</p>
             <p><strong>Audio Level:</strong> {Math.round(audio.audioLevel)}%</p>
             <p><strong>Data Channel:</strong> {realtimeService.getConnectionStatus().dataChannelState}</p>
+            <p><strong>Strict Mode:</strong> {realtimeService.getServiceState().config?.strictTranslatorMode !== false ? '✅ Enabled' : '❌ Disabled'}</p>
           </div>
           
           <div className="connection-actions">
@@ -223,6 +225,42 @@ const SessionPage: React.FC = () => {
               }}
             >
               🔍 Check Service Status
+            </button>
+
+            <button 
+              className={`btn btn-sm ${realtimeService.getServiceState().config?.strictTranslatorMode !== false ? 'btn-success' : 'btn-warning'}`}
+              onClick={async () => {
+                const currentMode = realtimeService.getServiceState().config?.strictTranslatorMode !== false;
+                const newMode = !currentMode;
+                
+                // Update the config
+                const serviceState = realtimeService.getServiceState();
+                if (serviceState.config) {
+                  serviceState.config.strictTranslatorMode = newMode;
+                }
+                
+                dispatch(addNotification({
+                  type: 'info',
+                  message: `Strict translator mode ${newMode ? 'enabled' : 'disabled'}. Reconnecting to apply changes...`
+                }));
+                
+                // Reconnect with new configuration
+                try {
+                  await realtimeService.reconnectWithNewConfig();
+                  dispatch(addNotification({
+                    type: 'success',
+                    message: `Successfully reconnected with ${newMode ? 'strict' : 'flexible'} translator mode`
+                  }));
+                } catch (error) {
+                  console.error('Error reconnecting with new config:', error);
+                  dispatch(addNotification({
+                    type: 'error',
+                    message: 'Failed to reconnect with new configuration'
+                  }));
+                }
+              }}
+            >
+              {realtimeService.getServiceState().config?.strictTranslatorMode !== false ? '🔒 Strict Mode' : '🔓 Flexible Mode'}
             </button>
 
             <button 
