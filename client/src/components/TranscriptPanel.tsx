@@ -80,8 +80,40 @@ const TranscriptPanel: React.FC = () => {
                 {line.jsonMetadata && (
                   <div className="json-metadata">
                     <details>
-                      <summary>📊 Translation Metadata</summary>
-                      <pre>{JSON.stringify(line.jsonMetadata, null, 2)}</pre>
+                      <summary>📊 AI Metadata & Intents</summary>
+                      <div className="metadata-content">
+                        <div className="metadata-basic">
+                          <div className="metadata-item">
+                            <strong>Language:</strong> {line.jsonMetadata.language?.toUpperCase() || 'Unknown'}
+                          </div>
+                          <div className="metadata-item">
+                            <strong>Original Speaker:</strong> {line.jsonMetadata.original_speaker || 'Unknown'}
+                          </div>
+                          <div className="metadata-item">
+                            <strong>Target Speaker:</strong> {line.jsonMetadata.target_speaker || 'Unknown'}
+                          </div>
+                        </div>
+                        
+                        {line.jsonMetadata.intents && line.jsonMetadata.intents.length > 0 && (
+                          <div className="intents-section">
+                            <strong>Detected Intents:</strong>
+                            {line.jsonMetadata.intents.map((intent: any, index: number) => (
+                              <div key={index} className="intent-item">
+                                <span className="intent-type">{intent.type}</span>
+                                <span className="intent-confidence">({Math.round(intent.confidence * 100)}%)</span>
+                                {intent.details && (
+                                  <span className="intent-details">: {intent.details}</span>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        
+                        <details className="raw-json">
+                          <summary>🔍 Raw JSON</summary>
+                          <pre>{JSON.stringify(line.jsonMetadata, null, 2)}</pre>
+                        </details>
+                      </div>
                     </details>
                   </div>
                 )}

@@ -14,15 +14,21 @@ export interface TranscriptLine {
     translation: string;
     original_speaker: string;
     target_speaker: string;
+    intents?: Array<{
+      type: string;
+      confidence: number;
+      details?: string;
+    }>;
   }; // Store the JSON metadata from structured responses
 }
 
 export interface Intent {
   id: string;
-  name: 'repeat_last' | 'schedule_follow_up' | 'send_lab_order';
+  name: 'repeat_last' | 'schedule_follow_up' | 'send_lab_order' | 'other';
   args: any;
   status: 'detected' | 'pending' | 'completed' | 'failed';
   actor: 'clinician' | 'patient';
+  confidence: number; // Confidence score for intent detection (0.0-1.0)
   timestamp: string; // Store as ISO string instead of Date object
 }
 

@@ -123,35 +123,22 @@ const SessionPage: React.FC = () => {
       />
       
       <div className="session-layout">
-        <div className="clinician-panel">
-          <h3>👨‍⚕️ Clinician</h3>
+        <div className="audio-panel">
+          <h3>🎤 Audio Input</h3>
           <AudioControls 
-            speaker="clinician"
-            isActive={audio.activeSpeaker === 'clinician'}
+            speaker="microphone"
+            isActive={audio.audioLevel > 10}
             audioLevel={audio.audioLevel}
           />
-          <div className="last-text">
-            <strong>Last said:</strong>
-            <p>{audio.lastClinicianText || 'No speech detected yet'}</p>
+          <div className="audio-status">
+            <strong>Audio Level:</strong> {Math.round(audio.audioLevel)}%
+            {audio.audioLevel > 10 && <span className="recording-indicator"> ● Recording</span>}
           </div>
         </div>
 
         <div className="transcript-panel">
           <h3>📝 Live Transcript</h3>
           <TranscriptPanel />
-        </div>
-
-        <div className="patient-panel">
-          <h3>👤 Patient</h3>
-          <AudioControls 
-            speaker="patient"
-            isActive={audio.activeSpeaker === 'patient'}
-            audioLevel={audio.audioLevel}
-          />
-          <div className="last-text">
-            <strong>Last said:</strong>
-            <p>{audio.lastPatientText || 'No speech detected yet'}</p>
-          </div>
         </div>
       </div>
 
@@ -165,7 +152,8 @@ const SessionPage: React.FC = () => {
           <div className="connection-info">
             <p><strong>Connected:</strong> {session.isConnected ? '✅ Yes' : '❌ No'}</p>
             <p><strong>Audio Level:</strong> {Math.round(audio.audioLevel)}%</p>
-            <p><strong>Active Speaker:</strong> {audio.activeSpeaker || 'None'}</p>
+            <p><strong>Audio Channel:</strong> {realtimeService.getConnectionStatus().audioDataChannelState}</p>
+            <p><strong>Text Channel:</strong> {realtimeService.getConnectionStatus().textDataChannelState}</p>
           </div>
           
           <div className="connection-actions">
@@ -176,7 +164,7 @@ const SessionPage: React.FC = () => {
                 console.log('Connection Status:', status);
                 dispatch(addNotification({
                   type: 'info',
-                  message: `Connection: ${status.dataChannelState}, Peer: ${status.peerConnectionState}, ICE: ${status.iceConnectionState}`
+                  message: `Audio: ${status.audioDataChannelState}, Text: ${status.textDataChannelState}, Peer: ${status.peerConnectionState}, ICE: ${status.iceConnectionState}`
                 }));
               }}
             >
@@ -189,6 +177,14 @@ const SessionPage: React.FC = () => {
               disabled={!session.isConnected}
             >
               🧪 Test Connection
+            </button>
+
+            <button 
+              className="btn btn-outline btn-sm"
+              onClick={() => realtimeService.testDualStreams()}
+              disabled={!session.isConnected}
+            >
+              🔄 Test Dual Streams
             </button>
 
             <button 

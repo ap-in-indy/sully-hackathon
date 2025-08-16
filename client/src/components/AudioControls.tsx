@@ -4,7 +4,7 @@ import { RootState } from '../store';
 import './AudioControls.css';
 
 interface AudioControlsProps {
-  speaker: 'clinician' | 'patient';
+  speaker: 'clinician' | 'patient' | 'microphone';
   isActive: boolean;
   audioLevel: number;
 }
@@ -13,7 +13,16 @@ const AudioControls: React.FC<AudioControlsProps> = ({ speaker, isActive, audioL
   const isConnected = useSelector((state: RootState) => state.session.isConnected);
 
   const getSpeakerLabel = () => {
-    return speaker === 'clinician' ? 'Clinician' : 'Patient';
+    switch (speaker) {
+      case 'clinician':
+        return 'Clinician';
+      case 'patient':
+        return 'Patient';
+      case 'microphone':
+        return 'Microphone';
+      default:
+        return 'Unknown';
+    }
   };
 
   const getStatusColor = () => {
